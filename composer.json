@@ -1,0 +1,21 @@
+{
+    "name": "fawzi/quiz-api",
+    "description": "API PHP pour quiz",
+    "autoload": {
+        "psr-4": {
+            "Fawzi\\QuizApi\\": "src/"
+        }
+    },
+    "authors": [
+        {
+            "name": "Fawzi",
+            "email": "fawzi.youjil@oclock.school"
+        }
+    ],
+    "require": {
+        "slim/slim": "4.12",
+        "slim/psr7": "^1.7",
+        "vlucas/phpdotenv": "^5.6",
+        "tuupola/cors-middleware": "^1.5"
+    }
+}
