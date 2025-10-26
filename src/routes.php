@@ -1,12 +1,19 @@
 <?php
-// Note: Ce fichier suppose que $app (instance de Slim) et $pdo (connexion PDO)
-// sont disponibles et passés via le mécanisme 'use' ou définis globalement.
+// Fichier : routes.php
 
 use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
 
+// Fonction utilitaire pour le formatage JSON (obligatoire pour Slim 4)
+function setJsonResponse(Response $response, array $data, int $status = 200): Response {
+    $response = $response->withHeader('Content-Type', 'application/json')->withStatus($status);
+    $response->getBody()->write(json_encode($data));
+    return $response;
+}
+
+
 // ===============================
-// ✅ Inscription (CORRIGÉ : Vérification de l'ID)
+// 1. Inscription
 // ===============================
 $app->post('/api/register', function (Request $request, Response $response) use ($pdo) {
     $data = json_decode($request->getBody()->getContents(), true);
@@ -16,16 +23,13 @@ $app->post('/api/register', function (Request $request, Response $response) use 
     $password = trim($data['password'] ?? '');
 
     if (!$name || !$pseudo || !$email || !$password) {
-        return $response->withHeader('Content-Type', 'application/json')->withStatus(400)
-            ->write(json_encode(['error' => 'Champs manquants.']));
+        return setJsonResponse($response, ['error' => 'Champs manquants.'], 400);
     }
 
-    // Vérifie doublons
     $stmt = $pdo->prepare("SELECT id FROM participants WHERE email = ? OR pseudo = ?");
     $stmt->execute([$email, $pseudo]);
     if ($stmt->fetch()) {
-        return $response->withHeader('Content-Type', 'application/json')->withStatus(409)
-            ->write(json_encode(['error' => 'Cet email ou pseudo est déjà utilisé.']));
+        return setJsonResponse($response, ['error' => 'Cet email ou pseudo est déjà utilisé.'], 409);
     }
 
     $hash = password_hash($password, PASSWORD_DEFAULT);
@@ -36,25 +40,18 @@ $app->post('/api/register', function (Request $request, Response $response) use 
          VALUES (?, ?, ?, ?, 0, ?, 0, 0)"
     );
     $stmt->execute([$name, $pseudo, $email, $hash, $isAdmin]);
-    $id = $pdo->lastInsertId();
-
-    // 🔑 CONVERSION EN ENTIER : S'assure que l'ID est un entier non nul pour l'envoi au client.
-    $id = (int)$id; 
+    $id = (int) $pdo->lastInsertId();
 
     if ($id <= 0) {
         error_log("ERREUR CRITIQUE: lastInsertId() a retourné un ID invalide: {$id}");
-        return $response->withHeader('Content-Type', 'application/json')->withStatus(500)
-            ->write(json_encode(['error' => 'Erreur lors de l\'enregistrement de l\'utilisateur. ID invalide.']));
+        return setJsonResponse($response, ['error' => 'Erreur lors de l’enregistrement de l’utilisateur. ID invalide.'], 500);
     }
     
-    error_log("Inscription réussie. ID BDD du joueur: {$id}");
-
-    $response->getBody()->write(json_encode(['message' => 'Inscription réussie', 'id' => $id, 'is_admin' => $isAdmin]));
-    return $response->withHeader('Content-Type', 'application/json')->withStatus(201);
+    return setJsonResponse($response, ['message' => 'Inscription réussie', 'id' => $id, 'is_admin' => $isAdmin], 201);
 });
 
 // ===============================
-// ✅ Connexion (Inchangé)
+// 2. Connexion
 // ===============================
 $app->post('/api/login', function (Request $request, Response $response) use ($pdo) {
     $data = json_decode($request->getBody()->getContents(), true);
@@ -62,8 +59,7 @@ $app->post('/api/login', function (Request $request, Response $response) use ($p
     $password = trim($data['password'] ?? '');
 
     if (!$email || !$password) {
-        return $response->withHeader('Content-Type', 'application/json')->withStatus(400)
-            ->write(json_encode(['error' => 'Email ou mot de passe manquant.']));
+        return setJsonResponse($response, ['error' => 'Email ou mot de passe manquant.'], 400);
     }
 
     $stmt = $pdo->prepare("SELECT id, password, name, pseudo, is_admin FROM participants WHERE email = ?");
@@ -71,67 +67,86 @@ $app->post('/api/login', function (Request $request, Response $response) use ($p
     $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
     if (!$user || !password_verify($password, $user['password'])) {
-        return $response->withHeader('Content-Type', 'application/json')->withStatus(401)
-            ->write(json_encode(['error' => 'Identifiants invalides.']));
+        return setJsonResponse($response, ['error' => 'Identifiants invalides.'], 401);
     }
 
-    $response->getBody()->write(json_encode([
+    return setJsonResponse($response, [
         'message' => 'Connexion réussie',
-        'participantId' => (int)$user['id'], // Assure que l'ID est un entier
+        'participantId' => (int)$user['id'],
         'name' => $user['name'],
         'pseudo' => $user['pseudo'],
         'is_admin' => (bool)$user['is_admin']
-    ]));
-    return $response->withHeader('Content-Type', 'application/json');
+    ]);
 });
 
-// ===============================
-// 🧩 Questions aléatoires (Inchangé)
-// ===============================
-$getQuestionsHandler = function (Request $request, Response $response) use ($pdo) {
-    $limit = 10;
-    $stmt = $pdo->query("SELECT * FROM questions ORDER BY RAND() LIMIT {$limit}");
-    $questions = $stmt->fetchAll(PDO::FETCH_ASSOC);
+// =========================================================
+// 🧩 3. Questions aléatoires (POST) - GESTION UNIQUE ET GLOBALE
+// =========================================================
+$app->post('/api/quiz/questions', function (Request $request, Response $response) use ($pdo) {
 
-    $formattedQuestions = array_map(function ($q) {
-        $incorrect = json_decode($q['incorrect_answers'], true) ?? [];
-        $allAnswers = $incorrect;
-        $allAnswers[] = $q['correct_answer'];
-        shuffle($allAnswers);
+    $limit = 10; // Nombre de questions par quiz
+    
+    try {
+        // 1. Sélectionner les questions non encore utilisées (is_used = 0)
+        $stmt = $pdo->prepare("
+            SELECT id, question, category, difficulty, correct_answer, incorrect_answers 
+            FROM questions
+            WHERE is_used = 0 
+            ORDER BY RAND()
+            LIMIT :limit
+        ");
+        $stmt->bindValue(':limit', $limit, PDO::PARAM_INT); 
+        $stmt->execute();
+        $questions = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        // 2. Marquer les questions sélectionnées comme utilisées (is_used = 1)
+        $idsToMarkUsed = array_map(function($q) { return (int)$q['id']; }, $questions);
         
-        return [
-            'id' => $q['id'],
-            'question' => $q['question'],
-            'category' => $q['category'],
-            'difficulty' => $q['difficulty'],
-            'answers' => $allAnswers,
-            'correct_answer' => $q['correct_answer']
-        ];
-    }, $questions);
+        if (!empty($idsToMarkUsed)) {
+            // Création des placeholders (?, ?, ?) pour la clause IN
+            $placeholders = implode(',', array_fill(0, count($idsToMarkUsed), '?'));
+            
+            // Mise à jour permanente dans la table 'questions'
+            $sql = "UPDATE questions SET is_used = 1 WHERE id IN ($placeholders)";
+            $update = $pdo->prepare($sql);
+            $update->execute($idsToMarkUsed);
+        }
 
-    $response->getBody()->write(json_encode($formattedQuestions));
-    return $response->withHeader('Content-Type', 'application/json');
-};
+        // 3. Formatage et Envoi des questions (Restauration de la clé 'answers')
+        $formattedQuestions = array_map(function ($q) {
+            $incorrect = json_decode($q['incorrect_answers'], true) ?? [];
+            $allAnswers = $incorrect;
+            $allAnswers[] = $q['correct_answer'];
+            shuffle($allAnswers);
 
-$app->get('/api/quiz/questions', $getQuestionsHandler);
+            return [
+                'id' => $q['id'],
+                'question' => $q['question'],
+                'category' => $q['category'],
+                'difficulty' => $q['difficulty'],
+                'answers' => $allAnswers, // <-- RESTAURATION de la clé 'answers'
+            ];
+        }, $questions);
+
+        return setJsonResponse($response, $formattedQuestions);
+
+    } catch (Exception $e) {
+        error_log("Erreur API /api/quiz/questions: " . $e->getMessage());
+        return setJsonResponse($response, ['error' => 'Erreur serveur interne lors de la sélection des questions.'], 500);
+    }
+});
 
 
 // ===============================
-// 🗑️ Route : Suppression des questions jouées (Neutralisée)
+// 🗑️ Route : Suppression des questions jouées (DÉSORMAIS INUTILE)
 // ===============================
 $app->post('/api/questions/delete', function (Request $request, Response $response) use ($pdo) {
-    $data = json_decode($request->getBody()->getContents(), true);
-    $question_ids = $data['ids'] ?? [];
-    $count = is_array($question_ids) ? count($question_ids) : 0;
-    
-    error_log("ATTENTION: Route /api/questions/delete appelée mais neutralisée. Tentative de suppression de {$count} IDs.");
-
-    $response->getBody()->write(json_encode(['success' => true, 'deleted_count' => 0, 'message' => 'Fonction de suppression temporairement désactivée.']));
-    return $response->withHeader('Content-Type', 'application/json')->withStatus(200);
+    // Cette fonction est désormais obsolète
+    return setJsonResponse($response, ['success' => true, 'message' => 'Historique géré par is_used. Pas d\'action requise ici.'], 200);
 });
 
 // ===============================
-// 🧩 Soumettre réponse (CORRIGÉ : Logs finaux)
+// 🧩 Soumettre réponse
 // ===============================
 $app->post('/api/quiz/answer', function (Request $request, Response $response) use ($pdo) {
     $data = json_decode($request->getBody()->getContents(), true);
@@ -139,15 +154,10 @@ $app->post('/api/quiz/answer', function (Request $request, Response $response) u
     $question_id = $data['question_id'] ?? null;
     $submitted_answer = trim($data['answer'] ?? '');
 
-    // 📢 LOG CRITIQUE 1: Voir l'ID reçu avant la requête BDD
-    error_log("API /answer reçu. Player ID: {$player_id}, Question ID: {$question_id}, Soumise: '{$submitted_answer}'");
-
     if (!$player_id || !$question_id || $submitted_answer === '') {
-        return $response->withHeader('Content-Type', 'application/json')->withStatus(400)
-            ->write(json_encode(['error' => 'Données manquantes.']));
+        return setJsonResponse($response, ['error' => 'Données manquantes.'], 400);
     }
 
-    // 1. Récupérer la bonne réponse
     $stmt = $pdo->prepare("SELECT correct_answer FROM questions WHERE id = ?");
     $stmt->execute([$question_id]);
     $correct = $stmt->fetchColumn(); 
@@ -158,34 +168,24 @@ $app->post('/api/quiz/answer', function (Request $request, Response $response) u
     if ($correct) {
         $correct_clean = strtolower(trim($correct)); 
         $answer_clean = strtolower($submitted_answer); 
-        
         $isCorrect = ($answer_clean === $correct_clean);
     }
 
     if ($isCorrect) {
-        // 2. Incrémente le score dans la base de données
         $stmt_update = $pdo->prepare("UPDATE participants SET score = score + 1 WHERE id = ?");
-        $success = $stmt_update->execute([$player_id]);
-
-        // 📢 LOG CRITIQUE 2: Confirmer la mise à jour du score
-        $rows_affected = $stmt_update->rowCount();
-        error_log("Score UPDATE RÉSULTAT FINAL. Player ID: {$player_id}. Lignes affectées: {$rows_affected}"); 
-
+        $stmt_update->execute([$player_id]);
         $scoreEarned = 1;
-    } else {
-        error_log("Réponse INCORRECTE. Soumise: '{$submitted_answer}', Correcte BDD: '{$correct}'");
     }
 
-    $response->getBody()->write(json_encode([
+    return setJsonResponse($response, [
         'correct_answer' => $correct, 
         'is_correct' => $isCorrect, 
         'score_earned' => $scoreEarned
-    ])); 
-    return $response->withHeader('Content-Type', 'application/json');
+    ]);
 });
 
 // ===============================
-// 🧾 Score & Classement (Inchangé)
+// 🧾 Score & Classement
 // ===============================
 $app->get('/api/score/{id}', function (Request $request, Response $response, array $args) use ($pdo) {
     $id = $args['id'];
@@ -193,20 +193,18 @@ $app->get('/api/score/{id}', function (Request $request, Response $response, arr
     $stmt->execute([$id]);
     $score = $stmt->fetchColumn();
 
-    $response->getBody()->write(json_encode(['score' => (int)$score]));
-    return $response->withHeader('Content-Type', 'application/json');
+    return setJsonResponse($response, ['score' => (int)$score]);
 });
 
 $app->get('/api/leaderboard', function (Request $request, Response $response) use ($pdo) {
     $stmt = $pdo->query("SELECT pseudo, score FROM participants ORDER BY score DESC LIMIT 10");
     $leaderboard = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-    $response->getBody()->write(json_encode($leaderboard));
-    return $response->withHeader('Content-Type', 'application/json');
+    return setJsonResponse($response, $leaderboard);
 });
 
 // ===============================
-// 🚨 Autres routes (Inchangé)
+// 🚨 Autres routes
 // ===============================
 
 $app->post('/api/players/ready', function (Request $request, Response $response) use ($pdo) {
@@ -214,22 +212,20 @@ $app->post('/api/players/ready', function (Request $request, Response $response)
     $player_id = $data['player_id'] ?? null;
 
     if (!$player_id) {
-        return $response->withHeader('Content-Type', 'application/json')->withStatus(400)
-            ->write(json_encode(['error' => 'ID joueur manquant.']));
+        return setJsonResponse($response, ['error' => 'ID joueur manquant.'], 400);
     }
 
     $stmt = $pdo->prepare("UPDATE participants SET is_ready = 1 WHERE id = ?");
     $stmt->execute([$player_id]);
 
-    return $response->withHeader('Content-Type', 'application/json')->write(json_encode(['success' => true]));
+    return setJsonResponse($response, ['success' => true]);
 });
 
 $app->get('/api/players/ready-list', function (Request $request, Response $response) use ($pdo) {
     $stmt = $pdo->query("SELECT pseudo, is_admin, is_ready FROM participants ORDER BY id ASC");
     $players = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-    $response->getBody()->write(json_encode($players));
-    return $response->withHeader('Content-Type', 'application/json');
+    return setJsonResponse($response, $players);
 });
 
 $app->post('/api/game/start', function (Request $request, Response $response) use ($pdo) {
@@ -237,8 +233,7 @@ $app->post('/api/game/start', function (Request $request, Response $response) us
     $admin_id = $data['admin_id'] ?? null;
 
     if (!$admin_id) {
-        return $response->withHeader('Content-Type', 'application/json')->withStatus(400)
-            ->write(json_encode(['error' => 'ID admin manquant.']));
+        return setJsonResponse($response, ['error' => 'ID admin manquant.'], 400);
     }
 
     $stmt = $pdo->prepare("SELECT is_admin FROM participants WHERE id = ?");
@@ -246,19 +241,17 @@ $app->post('/api/game/start', function (Request $request, Response $response) us
     $isAdmin = $stmt->fetchColumn();
 
     if (!$isAdmin) {
-        return $response->withHeader('Content-Type', 'application/json')->withStatus(403)
-            ->write(json_encode(['error' => 'Action réservée à l’administrateur.']));
+        return setJsonResponse($response, ['error' => 'Action réservée à l’administrateur.'], 403);
     }
 
     $pdo->query("UPDATE participants SET game_started = 1");
 
-    return $response->withHeader('Content-Type', 'application/json')->write(json_encode(['message' => 'Partie lancée !']));
+    return setJsonResponse($response, ['message' => 'Partie lancée !']);
 });
 
 $app->get('/api/game/status', function (Request $request, Response $response) use ($pdo) {
     $stmt = $pdo->query("SELECT game_started FROM participants LIMIT 1");
     $status = $stmt->fetchColumn();
 
-    $response->getBody()->write(json_encode(['started' => (bool)$status]));
-    return $response->withHeader('Content-Type', 'application/json');
+    return setJsonResponse($response, ['started' => (bool)$status]);
 });
