@@ -1,5 +1,5 @@
 <?php
-// Fichier : routes.php
+// Fichier : src/routes.php - Version avec correction des caractères invisibles
 
 use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
@@ -35,6 +35,7 @@ $app->post('/api/register', function (Request $request, Response $response) use 
     $hash = password_hash($password, PASSWORD_DEFAULT);
     $isAdmin = ($email === 'admin@quiz.com') ? 1 : 0;
 
+    // Réinitialisation de 'is_ready' et 'game_started' à 0 pour tout nouvel inscrit
     $stmt = $pdo->prepare(
         "INSERT INTO participants (name, pseudo, email, password, score, is_admin, is_ready, game_started) 
          VALUES (?, ?, ?, ?, 0, ?, 0, 0)"
@@ -99,6 +100,23 @@ $app->post('/api/quiz/questions', function (Request $request, Response $response
         $stmt->execute();
         $questions = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
+        // Si nous n'avons pas assez de questions non utilisées, réinitialiser tout et recommencer
+        if (count($questions) < $limit) {
+             // Marquer toutes les questions comme non utilisées (is_used = 0)
+            $pdo->query("UPDATE questions SET is_used = 0");
+            
+            // Re-sélectionner les questions
+            $stmt = $pdo->prepare("
+                SELECT id, question, category, difficulty, correct_answer, incorrect_answers 
+                FROM questions
+                ORDER BY RAND()
+                LIMIT :limit
+            ");
+            $stmt->bindValue(':limit', $limit, PDO::PARAM_INT); 
+            $stmt->execute();
+            $questions = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        }
+
         // 2. Marquer les questions sélectionnées comme utilisées (is_used = 1)
         $idsToMarkUsed = array_map(function($q) { return (int)$q['id']; }, $questions);
         
@@ -138,15 +156,7 @@ $app->post('/api/quiz/questions', function (Request $request, Response $response
 
 
 // ===============================
-// 🗑️ Route : Suppression des questions jouées (DÉSORMAIS INUTILE)
-// ===============================
-$app->post('/api/questions/delete', function (Request $request, Response $response) use ($pdo) {
-    // Cette fonction est désormais obsolète
-    return setJsonResponse($response, ['success' => true, 'message' => 'Historique géré par is_used. Pas d\'action requise ici.'], 200);
-});
-
-// ===============================
-// 🧩 Soumettre réponse
+// 🧩 Soumettre réponse (Simulé, le serveur Socket gère le score final)
 // ===============================
 $app->post('/api/quiz/answer', function (Request $request, Response $response) use ($pdo) {
     $data = json_decode($request->getBody()->getContents(), true);
@@ -169,12 +179,13 @@ $app->post('/api/quiz/answer', function (Request $request, Response $response) u
         $correct_clean = strtolower(trim($correct)); 
         $answer_clean = strtolower($submitted_answer); 
         $isCorrect = ($answer_clean === $correct_clean);
-    }
-
-    if ($isCorrect) {
-        $stmt_update = $pdo->prepare("UPDATE participants SET score = score + 1 WHERE id = ?");
-        $stmt_update->execute([$player_id]);
-        $scoreEarned = 1;
+        
+        // Simuler la mise à jour du score pour l'API pure, même si Socket.io est la source de vérité
+        if ($isCorrect) {
+            $stmt_update = $pdo->prepare("UPDATE participants SET score = score + 1 WHERE id = ?");
+            $stmt_update->execute([$player_id]);
+            $scoreEarned = 1;
+        }
     }
 
     return setJsonResponse($response, [
@@ -204,7 +215,7 @@ $app->get('/api/leaderboard', function (Request $request, Response $response) us
 });
 
 // ===============================
-// 🚨 Autres routes
+// 🚨 Routes de Gestion du Lobby
 // ===============================
 
 $app->post('/api/players/ready', function (Request $request, Response $response) use ($pdo) {
@@ -254,4 +265,24 @@ $app->get('/api/game/status', function (Request $request, Response $response) us
     $status = $stmt->fetchColumn();
 
     return setJsonResponse($response, ['started' => (bool)$status]);
+});
+
+// ===============================
+// 🧹 Route : Réinitialisation du jeu (pour l'admin)
+// ===============================
+$app->post('/api/game/reset', function (Request $request, Response $response) use ($pdo) {
+    // Note: cette route doit être utilisée par l'administrateur
+    try {
+        // Réinitialiser le statut 'is_used' des questions
+        $pdo->query("UPDATE questions SET is_used = 0");
+        
+        // Réinitialiser les scores, le statut 'ready' et 'game_started' des participants
+        $pdo->query("UPDATE participants SET score = 0, is_ready = 0, game_started = 0");
+
+        return setJsonResponse($response, ['message' => 'Le jeu a été complètement réinitialisé. Les questions peuvent être réutilisées.'], 200);
+
+    } catch (Exception $e) {
+        error_log("Erreur lors de la réinitialisation du jeu: " . $e->getMessage());
+        return setJsonResponse($response, ['error' => 'Erreur serveur interne lors de la réinitialisation.'], 500);
+    }
 });
