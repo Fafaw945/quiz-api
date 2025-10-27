@@ -9,51 +9,17 @@ require __DIR__ . '/../vendor/autoload.php';
 $app = AppFactory::create(); 
 
 // =============================== 
-// 🔧 1. Connexion BDD (Adaptée à Heroku PostgreSQL)
+// 🔧 1. Connexion BDD (L'INITIALISATION PDO EST MAINTENANT DANS db.php)
 // =============================== 
 
-// Tenter de lire l'URL de connexion de la base de données fournie par Heroku ou Vercel
-$dbUrl = getenv('DATABASE_URL');
-
-if (!$dbUrl) {
-    // Fallback pour le développement local
-    // Assurez-vous que cette URL est correcte localement
-    $dbUrl = "postgres://user:password@localhost:5432/quiz_game";
-}
-
-// Analyser l'URL de la BDD pour obtenir les paramètres
-$dbParams = parse_url($dbUrl);
-
-if (!$dbParams || !isset($dbParams['host'])) {
-    // Si l'URL n'est pas parsée correctement ou manque l'hôte, on meurt.
-    die("Erreur: Impossible d'analyser l'URL de la base de données ou l'hôte est manquant.");
-}
-
-// Construction du DSN pour PostgreSQL
-$dsn = sprintf(
-    'pgsql:host=%s;port=%d;dbname=%s;user=%s;password=%s',
-    $dbParams['host'],
-    $dbParams['port'] ?? 5432, 
-    ltrim($dbParams['path'], '/'),
-    $dbParams['user'],
-    $dbParams['pass']
-);
-
-try {
-    // Utilisation de $db pour l'instance PDO
-    $db = new PDO($dsn); 
-    $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION); 
-    $db->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC); 
-    
-} catch (PDOException $e) {
-    error_log("Erreur de connexion à la BDD: " . $e->getMessage());
-    // Affichage d'une erreur générique pour ne pas exposer les infos sensibles
-    die("Erreur de connexion à la base de données. Détails dans les logs.");
-}
+// Inclus le fichier db.php qui gère l'initialisation de $db via getDatabaseConnection()
+// S'il y a une erreur de connexion, db.php arrête l'exécution et affiche un message 500.
+// $db est maintenant disponible pour le conteneur.
+require __DIR__ . '/../src/db.php'; 
 
 
 // =============================== 
-// 🌍 2. Middleware CORS (Adapté à Vercel)
+// 🌍 2. Middleware CORS 
 // =============================== 
 
 // CORS doit être le premier middleware à être exécuté (après les gestionnaires de routes)
@@ -73,7 +39,7 @@ $app->add(function (Request $request, $handler) {
     if (in_array($origin, $allowedOrigins)) {
         $allowedOrigin = $origin;
     } else {
-        $allowedOrigin = '*'; // Utilisation d'un joker pour le moment, mais préférable de le restreindre
+        $allowedOrigin = '*'; // Utilisation d'un joker si l'origine n'est pas reconnue
     }
     
     return $response 
@@ -99,20 +65,25 @@ $errorMiddleware = $app->addErrorMiddleware(true, true, true);
 
 
 // =============================== 
-// 🔹 3. Inclure et Appeler les routes (CORRECTION getContainer)
+// 🔹 3. Inclure et Appeler les routes (Injection de $db)
 // =============================== 
 $routesFile = __DIR__ . '/../src/routes.php';
 if (!file_exists($routesFile)) {
     die("ERREUR: Le fichier de routes est introuvable à l'emplacement: " . $routesFile);
 }
 
-// CORRECTION: On passe $db directement. Pour que cela fonctionne, on stocke $db dans le conteneur 
-// via une méthode supportée par Slim 4 si un conteneur est fourni, ou on le passe directement.
-// Ici, on simule l'injection de dépendance car votre fichier routes.php utilise getContainer().
-// On utilise une petite astuce pour rendre $db accessible via le conteneur.
+// Assurez-vous que $db (initialisé dans db.php) est injecté dans le conteneur Slim
 $container = $app->getContainer();
 if ($container) {
-    $container->set('db', $db);
+    // Si $db existe (initialisé dans db.php), on le place dans le conteneur
+    // pour qu'il soit disponible via $this->get('db') ou $container->get('db')
+    if (isset($db)) {
+        $container->set('db', $db);
+    } else {
+        // Ceci ne devrait pas arriver si db.php fonctionne correctement
+        error_log("FATAL: \$db n'a pas été initialisé par db.php.");
+        die("Erreur de configuration interne: La connexion DB est introuvable.");
+    }
 }
 
 
