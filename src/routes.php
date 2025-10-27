@@ -17,13 +17,33 @@ return function (App $app) {
         return $response;
     };
 
+    // ----------------------------------------------------------------------
+    // --- NOUVELLE FONCTION UTILITAIRE : Vérification des droits Admin ---
+    // ----------------------------------------------------------------------
+    $checkAdminAccess = function (int $adminId, \PDO $db, Response $response, callable $sendJsonResponse): ?Response {
+        if (!$adminId) {
+            return $sendJsonResponse($response, ['error' => 'ID admin manquant.'], 400);
+        }
+
+        $stmt = $db->prepare("SELECT is_admin FROM participants WHERE id = ?");
+        $stmt->execute([$adminId]);
+        // La valeur 't'/'f' de PostgreSQL est correctement convertie en booléen.
+        $isAdmin = (bool)$stmt->fetchColumn();
+
+        if (!$isAdmin) {
+            return $sendJsonResponse($response, ['error' => 'Action réservée à l’administrateur.'], 403);
+        }
+        return null; // Accès autorisé
+    };
 
     // ===============================
     // 1. Inscription
     // ===============================
     $app->post('/api/register', function (Request $request, Response $response) use ($db, $sendJsonResponse) {
-        // Le corps de la requête est déjà parsé par le middleware, 
-        // nous utilisons donc getParsedBody() au lieu de getBody()->getContents() et json_decode()
+        /*
+         * NOTE DE SÉCURITÉ: Après l'inscription, un JWT ou un token de session devrait être retourné
+         * pour sécuriser les requêtes suivantes. L'ID retourné ici ne doit pas être utilisé directement.
+         */
         $data = $request->getParsedBody();
         $name = trim($data['name'] ?? '');
         $pseudo = trim($data['pseudo'] ?? '');
@@ -43,7 +63,7 @@ return function (App $app) {
             }
 
             $hash = password_hash($password, PASSWORD_DEFAULT);
-            $isAdmin = ($email === 'admin@quiz.com') ? 't' : 'f'; // Utilisez 't'/'f' ou TRUE/FALSE pour PostgreSQL
+            $isAdmin = ($email === 'admin@quiz.com') ? 't' : 'f'; // 't'/'f' pour PostgreSQL
 
             // Insertion et récupération de l'ID généré
             $stmt = $db->prepare(
@@ -72,6 +92,9 @@ return function (App $app) {
     // 2. Connexion
     // ===============================
     $app->post('/api/login', function (Request $request, Response $response) use ($db, $sendJsonResponse) {
+        /*
+         * NOTE DE SÉCURITÉ: En production, cette route devrait générer et retourner un JWT sécurisé.
+         */
         $data = $request->getParsedBody();
         $email = trim($data['email'] ?? '');
         $password = trim($data['password'] ?? '');
@@ -89,7 +112,6 @@ return function (App $app) {
                 return $sendJsonResponse($response, ['error' => 'Identifiants invalides.'], 401);
             }
 
-            // La valeur PostgreSQL 't' ou 'f' est correctement convertie en booléen par PHP/PDO
             return $sendJsonResponse($response, [
                 'message' => 'Connexion réussie',
                 'participantId' => (int)$user['id'],
@@ -151,6 +173,7 @@ return function (App $app) {
                 $allAnswers[] = $q['correct_answer'];
                 shuffle($allAnswers);
 
+                // IMPORTANT : Retirer les bonnes réponses du JSON de sortie pour les joueurs.
                 return [
                     'id' => $q['id'],
                     'question' => $q['question'],
@@ -173,13 +196,16 @@ return function (App $app) {
     // 🧩 Soumettre réponse 
     // ===============================
     $app->post('/api/quiz/answer', function (Request $request, Response $response) use ($db, $sendJsonResponse) {
+        /*
+         * NOTE DE SÉCURITÉ: $data['player_id'] devrait être extrait d'un JWT validé et non du corps de la requête.
+         */
         $data = $request->getParsedBody();
         $player_id = $data['player_id'] ?? null;
         $question_id = $data['question_id'] ?? null;
         $submitted_answer = trim($data['answer'] ?? '');
 
         if (!$player_id || !$question_id || $submitted_answer === '') {
-            return $sendJsonResponse($response, ['error' => 'Données manquantes.'], 400);
+            return $sendJsonResponse($response, ['error' => 'Données manquantes (player_id, question_id ou answer).'], 400);
         }
 
         try {
@@ -187,7 +213,12 @@ return function (App $app) {
             $stmt = $db->prepare("SELECT correct_answer, difficulty FROM questions WHERE id = ?");
             $stmt->execute([$question_id]);
             $questionData = $stmt->fetch(\PDO::FETCH_ASSOC); 
-            $correct = $questionData['correct_answer'] ?? null;
+            
+            if (!$questionData) {
+                 return $sendJsonResponse($response, ['error' => 'Question non trouvée.'], 404);
+            }
+            
+            $correct = $questionData['correct_answer'];
             $difficulty = $questionData['difficulty'] ?? 'easy';
 
             $isCorrect = false;
@@ -195,17 +226,16 @@ return function (App $app) {
             $pointsMap = ['easy' => 1, 'medium' => 2, 'hard' => 3];
             $points = $pointsMap[$difficulty] ?? 1;
             
-            if ($correct) {
-                $correct_clean = strtolower(trim($correct)); 
-                $answer_clean = strtolower($submitted_answer); 
-                $isCorrect = ($answer_clean === $correct_clean);
-                
-                // 2. Mettre à jour le score dans la BDD
-                if ($isCorrect) {
-                    $stmt_update = $db->prepare("UPDATE participants SET score = score + ? WHERE id = ?");
-                    $stmt_update->execute([$points, $player_id]);
-                    $scoreEarned = $points;
-                }
+            // Comparaison des réponses (case-insensitive et trim pour robustesse)
+            $correct_clean = strtolower(trim($correct)); 
+            $answer_clean = strtolower($submitted_answer); 
+            $isCorrect = ($answer_clean === $correct_clean);
+            
+            // 2. Mettre à jour le score dans la BDD
+            if ($isCorrect) {
+                $stmt_update = $db->prepare("UPDATE participants SET score = score + ? WHERE id = ?");
+                $stmt_update->execute([$points, $player_id]);
+                $scoreEarned = $points;
             }
 
             return $sendJsonResponse($response, [
@@ -228,6 +258,10 @@ return function (App $app) {
         $stmt->execute([$id]);
         $score = $stmt->fetchColumn();
 
+        if ($score === false) {
+             return $sendJsonResponse($response, ['error' => 'Participant non trouvé.'], 404);
+        }
+
         return $sendJsonResponse($response, ['score' => (int)$score]);
     });
 
@@ -243,6 +277,9 @@ return function (App $app) {
     // ===============================
 
     $app->post('/api/players/ready', function (Request $request, Response $response) use ($db, $sendJsonResponse) {
+        /*
+         * NOTE DE SÉCURITÉ: $data['player_id'] devrait être extrait d'un JWT validé.
+         */
         $data = $request->getParsedBody();
         $player_id = $data['player_id'] ?? null;
 
@@ -253,7 +290,12 @@ return function (App $app) {
         $stmt = $db->prepare("UPDATE participants SET is_ready = TRUE WHERE id = ?");
         $stmt->execute([$player_id]);
 
-        return $sendJsonResponse($response, ['success' => true]);
+        // Vérifier si l'update a eu lieu (le participant existe)
+        if ($stmt->rowCount() === 0) {
+             return $sendJsonResponse($response, ['error' => 'Participant non trouvé.'], 404);
+        }
+
+        return $sendJsonResponse($response, ['success' => true, 'message' => 'Statut prêt mis à jour.']);
     });
 
     $app->get('/api/players/ready-list', function (Request $request, Response $response) use ($db, $sendJsonResponse) {
@@ -270,21 +312,17 @@ return function (App $app) {
         return $sendJsonResponse($response, $players);
     });
 
-    $app->post('/api/game/start', function (Request $request, Response $response) use ($db, $sendJsonResponse) {
+    $app->post('/api/game/start', function (Request $request, Response $response) use ($db, $sendJsonResponse, $checkAdminAccess) {
+        /*
+         * NOTE DE SÉCURITÉ: $data['admin_id'] devrait être extrait d'un JWT validé.
+         */
         $data = $request->getParsedBody();
         $admin_id = $data['admin_id'] ?? null;
-
-        if (!$admin_id) {
-            return $sendJsonResponse($response, ['error' => 'ID admin manquant.'], 400);
-        }
-
-        // Vérification de l'admin
-        $stmt = $db->prepare("SELECT is_admin FROM participants WHERE id = ?");
-        $stmt->execute([$admin_id]);
-        $isAdmin = (bool)$stmt->fetchColumn();
-
-        if (!$isAdmin) {
-            return $sendJsonResponse($response, ['error' => 'Action réservée à l’administrateur.'], 403);
+        
+        // ** Utilisation de la nouvelle fonction utilitaire pour vérifier l'accès admin **
+        $accessCheck = $checkAdminAccess((int)$admin_id, $db, $response, $sendJsonResponse);
+        if ($accessCheck !== null) {
+            return $accessCheck; // Renvoie l'erreur 400 ou 403
         }
 
         // Lancement du jeu
@@ -294,12 +332,12 @@ return function (App $app) {
     });
 
     $app->get('/api/game/status', function (Request $request, Response $response) use ($db, $sendJsonResponse) {
-        // On récupère le statut global (le statut d'un participant suffit si on part du principe que tous ont la même valeur)
+        // On récupère le statut global
         $stmt = $db->query("SELECT game_started FROM participants LIMIT 1");
         $status = $stmt->fetchColumn();
 
         // Conversion en booléen
-        $started = ($status === 't' || $status === true || $status === 1);
+        $started = ($status === 't' || $status === true);
 
         return $sendJsonResponse($response, ['started' => $started]);
     });
@@ -307,21 +345,17 @@ return function (App $app) {
     // ===============================
     // 🧹 Route : Réinitialisation du jeu (pour l'admin)
     // ===============================
-    $app->post('/api/game/reset', function (Request $request, Response $response) use ($db, $sendJsonResponse) {
+    $app->post('/api/game/reset', function (Request $request, Response $response) use ($db, $sendJsonResponse, $checkAdminAccess) {
+        /*
+         * NOTE DE SÉCURITÉ: $data['admin_id'] devrait être extrait d'un JWT validé.
+         */
         $data = $request->getParsedBody();
-        $admin_id = $data['admin_id'] ?? null; // Si vous voulez exiger l'ID admin pour la réinitialisation
+        $admin_id = $data['admin_id'] ?? null; 
 
-        if (!$admin_id) {
-             return $sendJsonResponse($response, ['error' => 'ID admin manquant.'], 400);
-        }
-
-        // Vérification de l'admin (recommandé)
-        $stmt = $db->prepare("SELECT is_admin FROM participants WHERE id = ?");
-        $stmt->execute([$admin_id]);
-        $isAdmin = (bool)$stmt->fetchColumn();
-
-        if (!$isAdmin) {
-            return $sendJsonResponse($response, ['error' => 'Réinitialisation réservée à l’administrateur.'], 403);
+        // ** Utilisation de la nouvelle fonction utilitaire pour vérifier l'accès admin **
+        $accessCheck = $checkAdminAccess((int)$admin_id, $db, $response, $sendJsonResponse);
+        if ($accessCheck !== null) {
+            return $accessCheck; // Renvoie l'erreur 400 ou 403
         }
 
         try {
@@ -340,7 +374,7 @@ return function (App $app) {
     });
 
     // --- Ajout de la route de test DB pour la vérification initiale ---
-     $app->get('/api/test-db', function (Request $request, Response $response) use ($db, $sendJsonResponse) {
+    $app->get('/api/test-db', function (Request $request, Response $response) use ($db, $sendJsonResponse) {
         try {
             $stmt = $db->query("SELECT version()");
             $version = $stmt->fetchColumn();
