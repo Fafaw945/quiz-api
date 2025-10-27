@@ -1,98 +1,85 @@
-<?php 
-use Psr\Http\Message\ResponseInterface as Response; 
-use Psr\Http\Message\ServerRequestInterface as Request; 
-use Slim\Factory\AppFactory; 
-use Slim\Middleware\BodyParsingMiddleware; 
+<?php
 
-require __DIR__ . '/../vendor/autoload.php'; 
+/**
+ * Point d'entrée principal de l'application.
+ * Gère la navigation et le rendu des vues.
+ */
 
-$app = AppFactory::create(); 
+// -------------------------------------------------------------------------
+// VÉRIFICATION CRITIQUE D'ENVIRONNEMENT
+// -------------------------------------------------------------------------
 
-// =============================== 
-// 🔧 1. Connexion BDD (L'INITIALISATION PDO EST MAINTENANT DANS db.php)
-// =============================== 
-
-// Inclus le fichier db.php qui gère l'initialisation de $db via getDatabaseConnection()
-// S'il y a une erreur de connexion, db.php arrête l'exécution et affiche un message 500.
-// $db est maintenant disponible pour le conteneur.
-require __DIR__ . '/../src/db.php'; 
-
-
-// =============================== 
-// 🌍 2. Middleware CORS 
-// =============================== 
-
-// CORS doit être le premier middleware à être exécuté (après les gestionnaires de routes)
-$app->add(function (Request $request, $handler) { 
-    $response = $handler->handle($request); 
-    
-    // Définir les origines autorisées (ajoutez votre domaine Vercel ici)
-    $allowedOrigins = [
-        'https://quiz-app-eight-gold-57.vercel.app', 
-        'https://quiz-api-fafaw945-13ff0b479a67.herokuapp.com',
-        'http://localhost:3000'
-    ]; 
-
-    $origin = $request->getHeaderLine('Origin');
-
-    // Vérification de l'origine
-    if (in_array($origin, $allowedOrigins)) {
-        $allowedOrigin = $origin;
-    } else {
-        $allowedOrigin = '*'; // Utilisation d'un joker si l'origine n'est pas reconnue
+// Si nous sommes dans un environnement d'hébergement (Heroku/Vercel)
+if (getenv('DATABASE_URL')) {
+    // Vérifier si l'extension PDO PostgreSQL est chargée
+    if (!extension_loaded('pdo_pgsql')) {
+        http_response_code(500);
+        echo "<h1>Erreur de Configuration PHP</h1>";
+        echo "<p>L'extension PDO pour PostgreSQL (pdo_pgsql) n'est pas chargée. Veuillez vous assurer que l'environnement PHP la prend en charge.</p>";
+        exit();
     }
-    
-    return $response 
-        ->withHeader('Access-Control-Allow-Origin', $allowedOrigin) 
-        ->withHeader('Access-Control-Allow-Headers', 'X-Requested-With, Content-Type, Accept, Origin, Authorization') 
-        ->withHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS')
-        ->withHeader('Access-Control-Allow-Credentials', 'true'); 
-}); 
-
-// ⚙️ Préflight OPTIONS 
-$app->options('/{routes:.+}', function (Request $request, Response $response) { 
-    return $response->withStatus(200); 
-}); 
-
-// Middleware pour parser les corps de requêtes JSON (très important)
-$app->add(new BodyParsingMiddleware());
-
-// Middleware de routage (doit être ajouté pour que les routes fonctionnent)
-$app->addRoutingMiddleware();
-
-// Gestion des erreurs
-$errorMiddleware = $app->addErrorMiddleware(true, true, true);
-
-
-// =============================== 
-// 🔹 3. Inclure et Appeler les routes (Injection de $db)
-// =============================== 
-$routesFile = __DIR__ . '/../src/routes.php';
-if (!file_exists($routesFile)) {
-    die("ERREUR: Le fichier de routes est introuvable à l'emplacement: " . $routesFile);
-}
-
-// Assurez-vous que $db (initialisé dans db.php) est injecté dans le conteneur Slim
-$container = $app->getContainer();
-if ($container) {
-    // Si $db existe (initialisé dans db.php), on le place dans le conteneur
-    // pour qu'il soit disponible via $this->get('db') ou $container->get('db')
-    if (isset($db)) {
-        $container->set('db', $db);
-    } else {
-        // Ceci ne devrait pas arriver si db.php fonctionne correctement
-        error_log("FATAL: \$db n'a pas été initialisé par db.php.");
-        die("Erreur de configuration interne: La connexion DB est introuvable.");
+} else {
+    // Vérifier si l'extension PDO MySQL est chargée pour le développement local
+    if (!extension_loaded('pdo_mysql')) {
+        // Optionnel : Vous pourriez préférer pdo_sqlite si vous n'avez pas de MySQL local.
+        http_response_code(500);
+        echo "<h1>Erreur de Configuration PHP</h1>";
+        echo "<p>L'extension PDO pour MySQL (pdo_mysql) n'est pas chargée. Vous devez l'activer pour l'exécution locale.</p>";
+        exit();
     }
 }
 
+// -------------------------------------------------------------------------
+// INITIALISATION DE LA BASE DE DONNÉES
+// -------------------------------------------------------------------------
 
-// Inclure et exécuer la fonction de routes
-$routes = require $routesFile;
-// Le fichier src/routes.php DOIT retourner une fonction de la forme :
-// return function (Slim\App $app) { ... };
-$routes($app);
+// Les chemins sont relatifs à l'emplacement de index.php (racine)
+require_once 'src/db.php'; 
+// La variable $db est maintenant disponible pour les requêtes.
 
 
-// 🚀 Lancer l’application 
-$app->run();
+// -------------------------------------------------------------------------
+// LOGIQUE DE ROUTAGE ET CONTRÔLEUR
+// -------------------------------------------------------------------------
+
+// Détermine la route demandée par l'utilisateur
+$route = $_GET['page'] ?? 'home'; 
+
+// Démarrer la session
+session_start();
+
+// -------------------------------------------------------------------------
+// VUES
+// -------------------------------------------------------------------------
+
+// Inclusion des fonctions utilitaires (comme la navigation)
+require_once 'src/functions.php';
+
+// Commencer le tampon de sortie pour capturer le contenu de la vue
+ob_start();
+
+// Déterminer la vue à charger
+switch ($route) {
+    case 'home':
+        require 'views/home.php';
+        break;
+    case 'quiz':
+        // Pour l'instant, c'est juste la vue du quiz
+        require 'views/quiz.php';
+        break;
+    case 'result':
+        require 'views/result.php';
+        break;
+    default:
+        http_response_code(404);
+        require 'views/404.php';
+        break;
+}
+
+// Récupérer le contenu du tampon de sortie
+$content = ob_get_clean();
+
+// Charger le layout principal et y injecter le contenu
+require 'views/layout.php';
+
+?>
