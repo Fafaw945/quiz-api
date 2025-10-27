@@ -1,109 +1,93 @@
 <?php
 
-// Fichier de connexion à la base de données (PostgreSQL via PDO)
-
 /**
- * Fonction pour obtenir l'instance de connexion PDO.
- *
- * @return PDO L'objet de connexion PDO.
- * @throws Exception En cas d'échec de la connexion.
+ * Ce fichier gère la connexion à la base de données.
+ * Nous passons à SQLite pour garantir la compatibilité dans les environnements restreints (sandbox).
  */
-function getDatabaseConnection(): PDO
-{
-    // Tente de récupérer l'URL de la base de données fournie par l'environnement d'hébergement (ex: Heroku)
-    $databaseUrl = getenv('DATABASE_URL');
 
-    // -------------------------------------------------------------------------
-    // 1. Connexion PostgreSQL (Environnement d'hébergement, ex: Heroku)
-    // -------------------------------------------------------------------------
-    if ($databaseUrl) {
-        try {
-            // CORRECTION CRITIQUE POUR HEROKU/Vercel :
-            // parse_url() ne gère pas toujours le schéma 'postgres://' correctement.
-            // On le remplace par 'https://' pour garantir que toutes les parties (user, pass, port) sont analysées.
-            $parsedDbUrl = str_replace(['postgres://', 'postgresql://'], 'https://', $databaseUrl);
+$db = null;
 
-            // Analyse de l'URL pour extraire les informations de connexion
-            $urlParts = parse_url($parsedDbUrl);
-
-            // Vérification des parties essentielles
-            if (!$urlParts || !isset($urlParts['host'], $urlParts['user'], $urlParts['pass'])) {
-                error_log("Erreur: Impossible d'analyser l'URL de la base de données ou les composants sont manquants.");
-                throw new Exception("Format d'URL de base de données invalide.");
-            }
-
-            $host = $urlParts['host'];
-            $port = $urlParts['port'] ?? 5432;
-            $user = $urlParts['user'];
-            $password = $urlParts['pass'];
-            // Le chemin (path) est le nom de la base de données. On retire le '/' initial.
-            $path = ltrim($urlParts['path'], '/');
-            $sslMode = 'require'; // Mode SSL obligatoire pour Heroku/Vercel
-
-            // Construction du DSN pour PostgreSQL
-            $dsn = "pgsql:host=$host;port=$port;dbname=$path;sslmode=$sslMode";
-
-            // Options PDO spécifiques à PostgreSQL
-            $options = [
-                // Gestion des erreurs : lancer une exception en cas d'erreur
-                PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-                // Mode de récupération par défaut : tableaux associatifs
-                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-                // DÉSACTIVE l'émulation des requêtes préparées (CRUCIAL pour PostgreSQL)
-                PDO::ATTR_EMULATE_PREPARES => false,
-            ];
-
-            $pdo = new PDO($dsn, $user, $password, $options);
-            return $pdo;
-
-        } catch (Exception $e) {
-            // Enregistrement de l'erreur dans les logs Heroku (critique pour le débogage)
-            error_log("Erreur de connexion PostgreSQL: " . $e->getMessage());
-            throw new Exception("Échec de la connexion à la base de données PostgreSQL.");
-        }
-    }
-
-    // -------------------------------------------------------------------------
-    // 2. Connexion MySQL (Environnement de développement local)
-    // -------------------------------------------------------------------------
-    else {
-        // Paramètres pour l'environnement local (à adapter si nécessaire)
-        $host = 'localhost';
-        $dbname = 'quiz_game'; 
-        $user = 'root';
-        $password = ''; 
-        
-        try {
-            // Construction du DSN pour MySQL
-            $dsn = "mysql:host=$host;dbname=$dbname;charset=utf8mb4";
-            
-            // Options PDO classiques
-            $options = [
-                PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-                PDO::ATTR_EMULATE_PREPARES => false,
-            ];
-
-            $pdo = new PDO($dsn, $user, $password, $options);
-            return $pdo;
-
-        } catch (PDOException $e) {
-            error_log("Erreur de connexion MySQL: " . $e->getMessage());
-            throw new Exception("Échec de la connexion à la base de données MySQL.");
-        }
-    }
-}
-
-// Globalisation de la connexion pour une utilisation facile dans d'autres fichiers
 try {
-    $db = getDatabaseConnection();
-} catch (Exception $e) {
-    // Affichage d'un message d'erreur clair si la connexion échoue
+    // Chemin vers le fichier SQLite. Il sera créé s'il n'existe pas.
+    $db_file = 'quiz.sqlite';
+    
+    // Connexion à SQLite
+    // Note: PDO est généralement intégré, donc cette méthode fonctionne souvent quand les autres échouent.
+    $db = new PDO("sqlite:$db_file");
+    
+    // Configurer PDO pour lever des exceptions en cas d'erreur SQL, ce qui est essentiel pour le débogage.
+    $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+
+    // -----------------------------------------------------------
+    // INITIALISATION DE LA BASE DE DONNÉES (Création des tables)
+    // -----------------------------------------------------------
+    
+    // 1. Création de la table 'quizzes'
+    $db->exec("
+        CREATE TABLE IF NOT EXISTS quizzes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            description TEXT
+        )
+    ");
+
+    // 2. Création de la table 'questions'
+    $db->exec("
+        CREATE TABLE IF NOT EXISTS questions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            quiz_id INTEGER NOT NULL,
+            question_text TEXT NOT NULL,
+            FOREIGN KEY (quiz_id) REFERENCES quizzes(id) ON DELETE CASCADE
+        )
+    ");
+
+    // 3. Création de la table 'answers'
+    $db->exec("
+        CREATE TABLE IF NOT EXISTS answers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            question_id INTEGER NOT NULL,
+            answer_text TEXT NOT NULL,
+            is_correct BOOLEAN NOT NULL DEFAULT 0,
+            FOREIGN KEY (question_id) REFERENCES questions(id) ON DELETE CASCADE
+        )
+    ");
+
+    // -----------------------------------------------------------
+    // AJOUT DE DONNÉES DE TEST (si la table est vide)
+    // -----------------------------------------------------------
+    
+    // Compter le nombre d'entrées
+    $stmt = $db->query("SELECT COUNT(*) FROM quizzes");
+    $count = $stmt->fetchColumn();
+
+    if ($count == 0) {
+        // Insertion du quiz de test
+        $db->exec("INSERT INTO quizzes (name, description) VALUES ('Quiz de Démarrage', 'Un petit test pour vérifier que tout fonctionne.')");
+        $quiz_id = $db->lastInsertId();
+
+        // Insertion des questions et réponses
+        $db->exec("INSERT INTO questions (quiz_id, question_text) VALUES ($quiz_id, 'Quelle est la capitale de la France ?')");
+        $q1_id = $db->lastInsertId();
+        
+        $db->exec("INSERT INTO answers (question_id, answer_text, is_correct) VALUES ($q1_id, 'Marseille', 0)");
+        $db->exec("INSERT INTO answers (question_id, answer_text, is_correct) VALUES ($q1_id, 'Paris', 1)");
+        $db->exec("INSERT INTO answers (question_id, answer_text, is_correct) VALUES ($q1_id, 'Lyon', 0)");
+
+        $db->exec("INSERT INTO questions (quiz_id, question_text) VALUES ($quiz_id, 'Quelle est la meilleure langue de programmation ?')");
+        $q2_id = $db->lastInsertId();
+        
+        $db->exec("INSERT INTO answers (question_id, answer_text, is_correct) VALUES ($q2_id, 'PHP', 1)");
+        $db->exec("INSERT INTO answers (question_id, answer_text, is_correct) VALUES ($q2_id, 'Python', 0)");
+        $db->exec("INSERT INTO answers (question_id, answer_text, is_correct) VALUES ($q2_id, 'JavaScript', 0)");
+    }
+
+} catch (PDOException $e) {
+    // Si même la connexion à SQLite échoue, il y a un problème plus fondamental avec PHP.
     http_response_code(500);
-    echo "<h1>Erreur Serveur</h1>";
-    echo "<p>Impossible de se connecter à la base de données. Détail: " . $e->getMessage() . "</p>";
-    // Arrêter l'exécution du script
-    exit(); 
+    // On affiche l'erreur détaillée pour le débogage.
+    echo "<h1>Erreur Critique de Base de Données</h1>";
+    echo "<p>La connexion à SQLite a échoué. Cause : " . htmlspecialchars($e->getMessage()) . "</p>";
+    exit();
 }
 
-// $db est désormais l'instance PDO, disponible globalement.
+?>
