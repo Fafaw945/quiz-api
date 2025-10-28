@@ -3,26 +3,25 @@ use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
 use Slim\Factory\AppFactory;
 
-require __DIR__ . '/vendor/autoload.php';
+require __DIR__ . '/../vendor/autoload.php'; // ✅ chemin corrigé pour Heroku
 
 $app = AppFactory::create();
 
 // ===============================
-// 🔧 1️⃣ Connexion BDD PostgreSQL (Heroku)
+// 🔧 1. Connexion BDD (Adaptée à Heroku)
 // ===============================
+
 $dbUrl = getenv('DATABASE_URL');
 if (!$dbUrl) {
-    // Fallback pour dev local PostgreSQL
-    $dbUrl = "postgres://postgres:@localhost:5432/quiz_game";
+    // Fallback local (développement)
+    $dbUrl = "mysql://root:@localhost:3306/quiz_game";
 }
 
 $dbParams = parse_url($dbUrl);
 
-// Construire le DSN PostgreSQL
 $dsn = sprintf(
-    'pgsql:host=%s;port=%s;dbname=%s',
+    'mysql:host=%s;dbname=%s;charset=utf8',
     $dbParams['host'],
-    $dbParams['port'] ?? 5432,
     ltrim($dbParams['path'], '/')
 );
 
@@ -34,7 +33,7 @@ $pdo = new PDO(
 $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 
 // ===============================
-// 🌍 2️⃣ Middleware CORS
+// 🌍 2. Middleware CORS
 // ===============================
 $app->add(function (Request $request, $handler) {
     $response = $handler->handle($request);
@@ -60,13 +59,16 @@ $app->options('/{routes:.+}', function (Request $request, Response $response) {
     return $response->withStatus(200);
 });
 
-// Ajouter le Routing Middleware AVANT de lancer l'application
+// ===============================
+// 🔹 Middleware Slim 4 requis
+// ===============================
 $app->addRoutingMiddleware();
+$app->addBodyParsingMiddleware(); // ✅ ajouté ici
 
 // ===============================
-// 🔹 3️⃣ Inclure les routes
+// 🔹 3. Inclure les routes
 // ===============================
-$routesFile = __DIR__ . '/src/routes.php';
+$routesFile = __DIR__ . '/../src/routes.php'; // ✅ chemin corrigé
 if (!file_exists($routesFile)) {
     die("ERREUR: Le fichier de routes est introuvable à l'emplacement: " . $routesFile);
 }
