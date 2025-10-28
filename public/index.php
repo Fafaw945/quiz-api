@@ -1,89 +1,82 @@
 <?php 
-
 use Psr\Http\Message\ResponseInterface as Response; 
 use Psr\Http\Message\ServerRequestInterface as Request; 
 use Slim\Factory\AppFactory; 
-use Exception;
-use PDO;
 
-// Définit le chemin absolu vers le répertoire parent (QUIZ-API/)
-$app_root = __DIR__ . '/..';
-require $app_root . '/vendor/autoload.php';
+require __DIR__ . '/vendor/autoload.php'; // Correction du chemin pour Heroku
 
-// Création de l'application Slim
 $app = AppFactory::create(); 
 
-// Définir $pdo en dehors de la portée de Slim pour qu'elle soit visible partout
-global $pdo; 
-
 // =============================== 
-// 🔧 1. Connexion BDD (Adaptée à Heroku PostgreSQL)
+// 🔧 1. Connexion BDD (Adaptée à Heroku)
 // =============================== 
 
-try {
-    $dbUrl = getenv("DATABASE_URL");
-    if (!$dbUrl) {
-        die("Erreur critique: La variable d'environnement DATABASE_URL est manquante.");
-    }
+// Tenter de lire l'URL de connexion de la base de données fournie par Heroku
+$dbUrl = getenv('DATABASE_URL');
+if (!$dbUrl) {
+    // Fallback pour le développement local si DATABASE_URL n'est pas définie (non recommandé pour la prod)
+    $dbUrl = "mysql://root:@localhost:3306/quiz_game";
+}
 
-    $dbParams = parse_url($dbUrl);
+// Analyser l'URL de la BDD pour obtenir les paramètres
+$dbParams = parse_url($dbUrl);
 
-    if ($dbParams === false || !isset($dbParams['scheme']) || $dbParams['scheme'] !== 'postgres') {
-        throw new Exception("L'URL de la base de données n'est pas valide ou n'utilise pas le schéma 'postgres'.");
-    }
+// Assurez-vous que les paramètres sont corrects pour ClearDB/JawsDB
+$dsn = sprintf(
+    'mysql:host=%s;dbname=%s;charset=utf8',
+    $dbParams['host'],
+    ltrim($dbParams['path'], '/')
+);
 
-    // Construction de la DSN pour PostgreSQL
-    $dsn = sprintf(
-        'pgsql:host=%s;port=%s;dbname=%s;user=%s;password=%s',
-        $dbParams['host'],
-        $dbParams['port'] ?? 5432, 
-        ltrim($dbParams['path'], '/'),
-        $dbParams['user'],
-        $dbParams['pass']
-    );
+$pdo = new PDO(
+    $dsn,
+    $dbParams['user'],
+    $dbParams['pass']
+); 
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION); 
 
-    // Initialisation de l'objet PDO et affectation à la variable globale
-    $pdo = new PDO($dsn); 
-    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION); 
+// =============================== 
+// 🌍 2. Middleware CORS (Adapté à Vercel)
+// =============================== 
+$app->add(function (Request $request, $handler) { 
+    $response = $handler->handle($request); 
     
-} catch (Exception $e) {
-    http_response_code(500);
-    // Erreur critique de connexion
-    die("Erreur de connexion à la base de données: " . $e->getMessage()); 
-}
+    // URL de votre frontend Vercel (quiz-app-eight-gold-57.vercel.app)
+    $vercelOrigin = 'https://quiz-app-eight-gold-57.vercel.app'; 
+    $herokuOrigin = 'https://quiz-api-fafaw945-13ff0b479a67.herokuapp.com'; // Ajouté par précaution
 
-// ===============================
-// 💡 Fonction utilitaire pour le formatage JSON (Globale)
-// ===============================
-if (!function_exists('sendJsonResponse')) {
-    function sendJsonResponse(Response $response, array $data, int $status = 200): Response {
-        $response->getBody()->write(json_encode($data));
-        return $response->withHeader('Content-Type', 'application/json')->withStatus($status);
+    // On autorise la bonne origine si elle est présente dans les requêtes
+    $origin = $request->getHeaderLine('Origin');
+
+    if ($origin === $vercelOrigin || $origin === $herokuOrigin || $origin === 'http://localhost:3000') {
+        $allowedOrigin = $origin;
+    } else {
+        // Fallback générique pour les requêtes qui n'auraient pas d'Origin (moins sécurisé mais fonctionnel)
+        $allowedOrigin = '*'; 
     }
-}
+    
+    return $response 
+        ->withHeader('Access-Control-Allow-Origin', $allowedOrigin) 
+        ->withHeader('Access-Control-Allow-Headers', 'X-Requested-With, Content-Type, Accept, Origin, Authorization') 
+        ->withHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS'); 
+}); 
 
-
-// =============================== 
-// 🌍 2. Middleware CORS (Simplifié) 
-// =============================== 
-// Gère la requête OPTIONS pour le pré-vol CORS
+// ⚙️ Préflight OPTIONS 
 $app->options('/{routes:.+}', function (Request $request, Response $response) { 
     return $response->withStatus(200); 
 }); 
 
+// Ajoutez le Routing Middleware AVANT de lancer l'application pour garantir que toutes les routes sont enregistrées.
 $app->addRoutingMiddleware();
 
 // =============================== 
-// 🔹 3. Inclure et Exécuter les routes
+// 🔹 3. Inclure les routes
 // =============================== 
-$routesFile = $app_root . '/src/routes.php'; 
+$routesFile = __DIR__ . '/src/routes.php'; // Correction du chemin
 if (!file_exists($routesFile)) {
     die("ERREUR: Le fichier de routes est introuvable à l'emplacement: " . $routesFile);
 }
-// Le fichier routes.php retourne une fonction qui reçoit l'objet $app
-$routes = require $routesFile;
-// On passe l'objet $app. La connexion $pdo sera récupérée via `global $pdo;` dans routes.php
-$routes($app);
+require $routesFile;
 
 // 🚀 Lancer l’application 
 $app->run();
