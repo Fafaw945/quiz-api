@@ -1,93 +1,56 @@
 <?php
 
 /**
- * Ce fichier gère la connexion à la base de données.
- * Nous passons à SQLite pour garantir la compatibilité dans les environnements restreints (sandbox).
+ * Ce fichier gère la connexion à la base de données PostgreSQL
+ * en utilisant la variable d'environnement DATABASE_URL fournie par Heroku.
+ * * La variable de connexion $db est rendue disponible à la fin du script.
  */
 
 $db = null;
 
-try {
-    // Chemin vers le fichier SQLite. Il sera créé s'il n'existe pas.
-    $db_file = 'quiz.sqlite';
-    
-    // Connexion à SQLite
-    // Note: PDO est généralement intégré, donc cette méthode fonctionne souvent quand les autres échouent.
-    $db = new PDO("sqlite:$db_file");
-    
-    // Configurer PDO pour lever des exceptions en cas d'erreur SQL, ce qui est essentiel pour le débogage.
-    $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+// 1. Récupération de la variable d'environnement DATABASE_URL
+$db_url = getenv('DATABASE_URL');
 
-    // -----------------------------------------------------------
-    // INITIALISATION DE LA BASE DE DONNÉES (Création des tables)
-    // -----------------------------------------------------------
-    
-    // 1. Création de la table 'quizzes'
-    $db->exec("
-        CREATE TABLE IF NOT EXISTS quizzes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            description TEXT
-        )
-    ");
-
-    // 2. Création de la table 'questions'
-    $db->exec("
-        CREATE TABLE IF NOT EXISTS questions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            quiz_id INTEGER NOT NULL,
-            question_text TEXT NOT NULL,
-            FOREIGN KEY (quiz_id) REFERENCES quizzes(id) ON DELETE CASCADE
-        )
-    ");
-
-    // 3. Création de la table 'answers'
-    $db->exec("
-        CREATE TABLE IF NOT EXISTS answers (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            question_id INTEGER NOT NULL,
-            answer_text TEXT NOT NULL,
-            is_correct BOOLEAN NOT NULL DEFAULT 0,
-            FOREIGN KEY (question_id) REFERENCES questions(id) ON DELETE CASCADE
-        )
-    ");
-
-    // -----------------------------------------------------------
-    // AJOUT DE DONNÉES DE TEST (si la table est vide)
-    // -----------------------------------------------------------
-    
-    // Compter le nombre d'entrées
-    $stmt = $db->query("SELECT COUNT(*) FROM quizzes");
-    $count = $stmt->fetchColumn();
-
-    if ($count == 0) {
-        // Insertion du quiz de test
-        $db->exec("INSERT INTO quizzes (name, description) VALUES ('Quiz de Démarrage', 'Un petit test pour vérifier que tout fonctionne.')");
-        $quiz_id = $db->lastInsertId();
-
-        // Insertion des questions et réponses
-        $db->exec("INSERT INTO questions (quiz_id, question_text) VALUES ($quiz_id, 'Quelle est la capitale de la France ?')");
-        $q1_id = $db->lastInsertId();
-        
-        $db->exec("INSERT INTO answers (question_id, answer_text, is_correct) VALUES ($q1_id, 'Marseille', 0)");
-        $db->exec("INSERT INTO answers (question_id, answer_text, is_correct) VALUES ($q1_id, 'Paris', 1)");
-        $db->exec("INSERT INTO answers (question_id, answer_text, is_correct) VALUES ($q1_id, 'Lyon', 0)");
-
-        $db->exec("INSERT INTO questions (quiz_id, question_text) VALUES ($quiz_id, 'Quelle est la meilleure langue de programmation ?')");
-        $q2_id = $db->lastInsertId();
-        
-        $db->exec("INSERT INTO answers (question_id, answer_text, is_correct) VALUES ($q2_id, 'PHP', 1)");
-        $db->exec("INSERT INTO answers (question_id, answer_text, is_correct) VALUES ($q2_id, 'Python', 0)");
-        $db->exec("INSERT INTO answers (question_id, answer_text, is_correct) VALUES ($q2_id, 'JavaScript', 0)");
-    }
-
-} catch (PDOException $e) {
-    // Si même la connexion à SQLite échoue, il y a un problème plus fondamental avec PHP.
+if (!$db_url) {
+    // Cas où la variable Heroku n'est pas définie (devrait être impossible en prod)
     http_response_code(500);
-    // On affiche l'erreur détaillée pour le débogage.
-    echo "<h1>Erreur Critique de Base de Données</h1>";
-    echo "<p>La connexion à SQLite a échoué. Cause : " . htmlspecialchars($e->getMessage()) . "</p>";
+    error_log("FATAL: DATABASE_URL variable d'environnement non trouvée.");
+    echo "<h1>Erreur de Configuration de Base de Données</h1>";
+    echo "<p>La variable de connexion (DATABASE_URL) est manquante.</p>";
     exit();
 }
+
+try {
+    // 2. Analyse (parsing) de l'URL de connexion PostgreSQL
+    $url = parse_url($db_url);
+
+    $host = $url['host'];
+    $port = $url['port'] ?? 5432; // Port par défaut PostgreSQL
+    $dbname = substr($url['path'], 1); // Enlève le '/' au début du chemin
+    $user = $url['user'];
+    $password = $url['pass'];
+
+    // 3. Construction du DSN (Data Source Name) pour PDO PostgreSQL
+    $dsn = "pgsql:host={$host};port={$port};dbname={$dbname}";
+
+    // 4. Connexion à la base de données
+    $db = new PDO($dsn, $user, $password);
+    
+    // 5. Configuration de PDO pour lever des exceptions en cas d'erreur SQL
+    $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+
+    // Si le code atteint ce point, la connexion $db est réussie.
+    
+} catch (PDOException $e) {
+    // Gérer l'échec de la connexion à la BDD (mauvais mot de passe, hôte injoignable, etc.)
+    http_response_code(500);
+    error_log("PostgreSQL Connection Failed: " . $e->getMessage());
+    echo "<h1>Erreur Critique de Base de Données</h1>";
+    // Pour le débogage, vous pouvez afficher l'erreur, mais attention en production.
+    echo "<p>Échec de la connexion PostgreSQL. Vérifiez les logs pour plus de détails.</p>";
+    exit();
+}
+
+// La variable $db est maintenant l'objet PDO connecté à PostgreSQL, prêt à l'emploi.
 
 ?>

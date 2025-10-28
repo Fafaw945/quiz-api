@@ -34,8 +34,7 @@ if (getenv('DATABASE_URL')) {
 // -------------------------------------------------------------------------
 
 // Les chemins sont relatifs à l'emplacement de index.php (racine)
-require_once __DIR__ . '/../src/functions.php';
-
+require_once __DIR__ . '/../src/db.php';
 // La variable $db est maintenant disponible pour les requêtes.
 
 
@@ -52,6 +51,9 @@ session_start();
 // -------------------------------------------------------------------------
 // VUES
 // -------------------------------------------------------------------------
+
+// Inclusion des fonctions utilitaires (comme la navigation)
+require_once 'src/functions.php';
 
 // Commencer le tampon de sortie pour capturer le contenu de la vue
 ob_start();
