@@ -34,7 +34,7 @@ if (getenv('DATABASE_URL')) {
 // -------------------------------------------------------------------------
 
 // Les chemins sont relatifs à l'emplacement de index.php (racine)
-require_once 'src/db.php'; 
+require_once '/../src/db.php'; 
 // La variable $db est maintenant disponible pour les requêtes.
 
 
