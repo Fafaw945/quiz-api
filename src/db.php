@@ -1,19 +1,15 @@
 <?php
 
 /**
- * Connexion universelle à la base de données :
- * - Utilise PostgreSQL sur Heroku (via DATABASE_URL)
- * - Utilise SQLite en local si aucune variable DATABASE_URL n’est trouvée
+ * db.php
+ * Gère la connexion à la base de données (PostgreSQL sur Heroku, SQLite en local).
  */
 
 $db = null;
 
 try {
-    // ---------------------------------------------------------------------
-    // 🔹 1. Connexion Heroku PostgreSQL
-    // ---------------------------------------------------------------------
+    // --- 1️⃣ Vérifier si on est sur Heroku (PostgreSQL) ---
     if (getenv('DATABASE_URL')) {
-        // Exemple : postgres://user:password@host:port/dbname
         $url = parse_url(getenv('DATABASE_URL'));
 
         $host = $url['host'];
@@ -22,16 +18,13 @@ try {
         $pass = $url['pass'];
         $dbname = ltrim($url['path'], '/');
 
-        $dsn = "pgsql:host=$host;port=$port;dbname=$dbname;sslmode=require";
+        // Connexion PostgreSQL
+        $dsn = "pgsql:host=$host;port=$port;dbname=$dbname;user=$user;password=$pass;sslmode=require";
+        $db = new PDO($dsn);
 
-        $db = new PDO($dsn, $user, $pass, [
-            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-        ]);
-    }
-    // ---------------------------------------------------------------------
-    // 🔹 2. Sinon, fallback local SQLite
-    // ---------------------------------------------------------------------
+        $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    } 
+    // --- 2️⃣ Sinon, on est en local (SQLite par défaut) ---
     else {
         $db_file = __DIR__ . '/../quiz.sqlite';
         $db = new PDO("sqlite:$db_file");
@@ -40,9 +33,7 @@ try {
 
 } catch (PDOException $e) {
     http_response_code(500);
-    echo "<h1>Erreur Critique de Base de Données</h1>";
-    echo "<p>Connexion échouée : " . htmlspecialchars($e->getMessage()) . "</p>";
+    echo "<h1>Erreur de connexion à la base de données</h1>";
+    echo "<p>" . htmlspecialchars($e->getMessage()) . "</p>";
     exit();
 }
-
-?>
