@@ -6,11 +6,16 @@ use Psr\Http\Message\ServerRequestInterface as Request;
 
 // Le fichier de routes doit OBLIGATOIREMENT retourner une fonction pour être inclus dans Slim 4.
 return function (App $app) {
-    // Récupération de l'instance PDO (PostgreSQL) configurée dans index.php
-    $db = $app->getContainer()->get('db');
+    // Rendre la variable globale $pdo disponible dans ce scope
+    global $pdo;
+    
+    // NOTE: Si $pdo n'est pas disponible, cela déclenchera une erreur fatale ici, 
+    // indiquant que la connexion dans index.php n'a pas été établie.
+
+    // Nous renommons la variable locale $db pour qu'elle corresponde à l'usage dans vos closures.
+    $db = $pdo;
 
     // --- Fonction utilitaire pour envoyer des réponses JSON ---
-    // Elle remplace la fonction 'setJsonResponse' dans le corps que vous avez fourni.
     $sendJsonResponse = function (Response $response, array $data, int $status = 200): Response {
         $response = $response->withHeader('Content-Type', 'application/json')->withStatus($status);
         $response->getBody()->write(json_encode($data));
@@ -86,7 +91,7 @@ return function (App $app) {
             error_log("Erreur PDO lors de l'inscription: " . $e->getMessage());
             return $sendJsonResponse($response, ['error' => 'Erreur serveur interne lors de l’inscription.'], 500);
         }
-    });
+    })->addBodyParsingMiddleware(); // Assurez-vous que le middleware de parsing est ajouté pour POST
 
     // ===============================
     // 2. Connexion
@@ -123,7 +128,7 @@ return function (App $app) {
             error_log("Erreur PDO lors de la connexion: " . $e->getMessage());
             return $sendJsonResponse($response, ['error' => 'Erreur serveur interne lors de la connexion.'], 500);
         }
-    });
+    })->addBodyParsingMiddleware();
 
     // =========================================================
     // 🧩 3. Questions aléatoires (POST)
@@ -147,12 +152,12 @@ return function (App $app) {
 
             // Si le nombre de questions non utilisées est insuffisant, réinitialiser tout
             if (count($questions) < $limit) {
-                 // Marquer toutes les questions comme non utilisées (is_used = FALSE)
-                 $db->query("UPDATE questions SET is_used = FALSE");
-                 
-                 // Re-sélectionner les questions
-                 $stmt->execute();
-                 $questions = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+                   // Marquer toutes les questions comme non utilisées (is_used = FALSE)
+                   $db->query("UPDATE questions SET is_used = FALSE");
+                   
+                   // Re-sélectionner les questions
+                   $stmt->execute();
+                   $questions = $stmt->fetchAll(\PDO::FETCH_ASSOC);
             }
 
             // Marquer les questions sélectionnées comme utilisées (is_used = TRUE)
@@ -168,6 +173,7 @@ return function (App $app) {
             // Formatage et Envoi des questions (Mélange des réponses)
             $formattedQuestions = array_map(function ($q) {
                 // Décodage de la colonne JSON 'incorrect_answers'
+                // NOTE: En PostgreSQL, vous devrez peut-être vous assurer que le type de colonne est TEXT ou JSONB.
                 $incorrect = json_decode($q['incorrect_answers'], true) ?? [];
                 $allAnswers = $incorrect;
                 $allAnswers[] = $q['correct_answer'];
@@ -189,7 +195,7 @@ return function (App $app) {
             error_log("Erreur API /api/quiz/questions: " . $e->getMessage());
             return $sendJsonResponse($response, ['error' => 'Erreur serveur interne lors de la sélection des questions.'], 500);
         }
-    });
+    })->addBodyParsingMiddleware();
 
 
     // ===============================
@@ -247,7 +253,7 @@ return function (App $app) {
              error_log("Erreur PDO lors de la soumission de la réponse: " . $e->getMessage());
             return $sendJsonResponse($response, ['error' => 'Erreur serveur interne.'], 500);
         }
-    });
+    })->addBodyParsingMiddleware();
 
     // ===============================
     // 🧾 Score & Classement
@@ -296,7 +302,7 @@ return function (App $app) {
         }
 
         return $sendJsonResponse($response, ['success' => true, 'message' => 'Statut prêt mis à jour.']);
-    });
+    })->addBodyParsingMiddleware();
 
     $app->get('/api/players/ready-list', function (Request $request, Response $response) use ($db, $sendJsonResponse) {
         $stmt = $db->query("SELECT pseudo, is_admin, is_ready FROM participants ORDER BY id ASC");
@@ -329,7 +335,7 @@ return function (App $app) {
         $db->query("UPDATE participants SET game_started = TRUE");
 
         return $sendJsonResponse($response, ['message' => 'Partie lancée !']);
-    });
+    })->addBodyParsingMiddleware();
 
     $app->get('/api/game/status', function (Request $request, Response $response) use ($db, $sendJsonResponse) {
         // On récupère le statut global
@@ -371,11 +377,12 @@ return function (App $app) {
             error_log("Erreur lors de la réinitialisation du jeu: " . $e->getMessage());
             return $sendJsonResponse($response, ['error' => 'Erreur serveur interne lors de la réinitialisation.'], 500);
         }
-    });
+    })->addBodyParsingMiddleware();
 
     // --- Ajout de la route de test DB pour la vérification initiale ---
     $app->get('/api/test-db', function (Request $request, Response $response) use ($db, $sendJsonResponse) {
         try {
+            // Test simple pour vérifier la connexion
             $stmt = $db->query("SELECT version()");
             $version = $stmt->fetchColumn();
             return $sendJsonResponse($response, [
