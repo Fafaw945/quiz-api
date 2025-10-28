@@ -1,41 +1,74 @@
 <?php
 
-namespace Src\Handlers;
+namespace App\Handlers;
 
 use PDO;
-use PDOException;
+use Exception;
 
 /**
- * Gère la connexion unique à la base de données PostgreSQL.
+ * Gère la connexion à la base de données.
+ * Cette version utilise une connexion PDO fournie de l'extérieur 
+ * (par exemple depuis public/index.php pour Heroku/Environnements spécifiques).
  */
 class DatabaseHandler
 {
-    private ?PDO $connection = null;
+    private ?PDO $pdo = null;
 
-    // ATTENTION : VALEURS FOURNIES PAR L'UTILISATEUR (CONNEXION AWS RDS)
-    private string $host = 'c8ie82co1njm86.cluster-czz5s0kz4scl.eu-west-1.rds.amazonaws.com'; 
-    private string $db = 'dainl179p8nlrp'; 
-    private string $user = 'u333hkbussc3oi'; 
-    private string $pass = 'pc8a8c7fe39db02d539be3ef6f8e3508d4c77a01f9e86b4f2cd03558f9bcfe765'; 
-    private int $port = 5432; // Le port par défaut est confirmé
+    /**
+     * Accepte une instance PDO ou gère la connexion via DATABASE_URL si aucune n'est fournie.
+     * Pour une configuration Slim simple comme la vôtre, il est plus simple de lui passer 
+     * la connexion déjà établie.
+     */
+    public function __construct(?PDO $pdoInstance = null)
+    {
+        if ($pdoInstance) {
+            $this->pdo = $pdoInstance;
+        } else {
+            $this->connect(); // Tentative de connexion si non fournie (fallback)
+        }
+    }
 
+    /**
+     * Établit la connexion si elle n'a pas été fournie ou n'existe pas (logique du fichier index.php)
+     */
+    private function connect(): void
+    {
+        try {
+            $dbUrl = getenv('DATABASE_URL');
+            if (!$dbUrl) {
+                throw new Exception("La variable d'environnement DATABASE_URL est manquante.");
+            }
+            
+            // Logique de parse_url pour PostgreSQL (reprise de votre index.php)
+            $dbParams = parse_url($dbUrl);
+
+            $dsn = sprintf(
+                'pgsql:host=%s;port=%s;dbname=%s;user=%s;password=%s',
+                $dbParams['host'],
+                $dbParams['port'] ?? 5432, 
+                ltrim($dbParams['path'], '/'),
+                $dbParams['user'],
+                $dbParams['pass']
+            );
+            
+            $this->pdo = new PDO($dsn);
+            $this->pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION); 
+
+        } catch (Exception $e) {
+            error_log("DB Error in DatabaseHandler: " . $e->getMessage());
+            throw new Exception("Erreur critique de connexion à la base de données.", 500, $e);
+        }
+    }
+
+    /**
+     * Retourne l'instance PDO de la connexion à la base de données.
+     */
     public function getConnection(): PDO
     {
-        if ($this->connection === null) {
-            $dsn = "pgsql:host={$this->host};port={$this->port};dbname={$this->db}";
-            try {
-                $this->connection = new PDO($dsn, $this->user, $this->pass, [
-                    // Configuration pour gérer les erreurs et le mode de récupération
-                    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-                    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-                ]);
-            } catch (PDOException $e) {
-                // En cas d'échec de la connexion, nous enregistrons l'erreur (pour le débogage)
-                error_log("DB Connection Error: " . $e->getMessage());
-                // Et levons une exception générique
-                throw new PDOException("Impossible de se connecter à la base de données. Vérifiez les informations de connexion.");
-            }
+        if ($this->pdo === null) {
+            // Devrait être déjà connecté dans le constructeur, mais sécurité
+            $this->connect(); 
         }
-        return $this->connection;
+        return $this->pdo;
     }
 }

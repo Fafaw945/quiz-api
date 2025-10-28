@@ -5,26 +5,48 @@ use Psr\Http\Message\ServerRequestInterface as Request;
 use Slim\App;
 use App\Handlers\DatabaseHandler;
 use App\Repositories\QuizRepository;
-use App\Middlewares\AuthMiddleware; // Import du nouveau middleware
+use App\Middleware\AuthMiddleware;
 use Tuupola\Middleware\CorsMiddleware;
+
+/**
+ * Fonction utilitaire pour le formatage JSON. Définie globalement 
+ * dans index.php et accessible ici.
+ *
+ * @param Response $response L'objet de réponse Slim.
+ * @param array $data Les données à encoder en JSON.
+ * @param int $status Le statut HTTP.
+ * @return Response
+ */
+if (!function_exists('sendJsonResponse')) {
+    // Si index.php ne l'a pas définie (pour les tests), on la définit ici
+    function sendJsonResponse(Response $response, array $data, int $status = 200): Response {
+        $response->getBody()->write(json_encode($data));
+        return $response->withHeader('Content-Type', 'application/json')->withStatus($status);
+    }
+}
+
 
 return function (App $app) {
 
-    // --- Fonction utilitaire pour le formatage JSON (basée sur votre logique) ---
-    $setJsonResponse = function (Response $response, array $data, int $status = 200): Response {
-        $response->getBody()->write(json_encode($data));
-        return $response->withHeader('Content-Type', 'application/json')->withStatus($status);
-    };
+    // Récupération de la connexion PDO globale injectée depuis index.php
+    global $pdo;
 
-    // On configure le middleware CORS
+    // --- Fonction utilitaire pour le formatage JSON (version locale utilisant l'alias global) ---
+    $setJsonResponse = 'sendJsonResponse'; // Utilise la fonction globale
+
+    // =============================== 
+    // 🌍 2. Middleware CORS (Tuupola)
+    // =============================== 
+    // Gère les headers CORS pour toutes les requêtes (y compris les en-têtes d'auth)
     $app->add(new CorsMiddleware([
         "origin" => ["*"],
         "methods" => ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        "headers.allow" => ["Authorization", "If-Match", "If-Unmodified-Since", "Content-Type", "Accept", "X-Participant-ID"], // Ajout de l'en-tête personnalisé
-        "headers.expose" => ["Etag", "Content-Length", "X-Custom-Header"],
+        "headers.allow" => ["Authorization", "Content-Type", "Accept", "X-Participant-ID"], 
+        "headers.expose" => ["Etag", "Content-Length"],
         "credentials" => true,
         "cache" => 86400,
     ]));
+
 
     // Route de base
     $app->get('/', function (Request $request, Response $response) use ($setJsonResponse) {
@@ -36,15 +58,16 @@ return function (App $app) {
     });
 
     // Définition du groupe de routes pour l'API
-    $app->group('/api', function (\Slim\Routing\RouteCollectorProxy $group) use ($setJsonResponse) {
+    $app->group('/api', function (\Slim\Routing\RouteCollectorProxy $group) use ($setJsonResponse, $pdo) {
 
         // Ajout du Body Parsing Middleware pour toutes les routes du groupe API
         $group->addBodyParsingMiddleware();
 
-        // Récupération du conteneur pour initialiser les dépendances
-        $dbHandler = new DatabaseHandler();
+        // --- Injection de la connexion PDO établie dans index.php ---
+        $dbHandler = new DatabaseHandler($pdo); 
         $quizRepository = new QuizRepository($dbHandler);
-        $authMiddleware = new AuthMiddleware($setJsonResponse); // Instance du middleware
+        // --- Le middleware reçoit maintenant le Repository ET la fonction utilitaire JSON ---
+        $authMiddleware = new AuthMiddleware($quizRepository, $setJsonResponse); 
 
         // ROUTE DE TEST DE LA BASE DE DONNÉES
         $group->get('/test-db', function (Request $request, Response $response) use ($dbHandler, $setJsonResponse) {
@@ -88,7 +111,8 @@ return function (App $app) {
                 }
 
                 $hash = password_hash($password, PASSWORD_DEFAULT);
-                $isAdmin = ($email === 'admin@quiz.com') ? 1 : 0;
+                // L'admin est défini dans la route par son email
+                $isAdmin = ($email === 'admin@quiz.com') ? true : false; 
 
                 $id = $quizRepository->createParticipant($name, $pseudo, $email, $hash, $isAdmin);
 
@@ -154,6 +178,7 @@ return function (App $app) {
 
                     // 3. Formatage et Envoi des questions
                     $formattedQuestions = array_map(function ($q) {
+                        // Décode les mauvaises réponses du format JSONB
                         $incorrect = json_decode($q['incorrect_answers'], true) ?? [];
                         $allAnswers = $incorrect;
                         $allAnswers[] = $q['correct_answer'];
@@ -165,6 +190,7 @@ return function (App $app) {
                             'category' => $q['category'],
                             'difficulty' => $q['difficulty'],
                             'answers' => $allAnswers,
+                            // NOTE: La réponse correcte n'est PAS envoyée ici.
                         ];
                     }, $questions);
 
@@ -199,6 +225,7 @@ return function (App $app) {
                     $scoreEarned = 0;
                     
                     if ($correct) {
+                        // Comparaison sans sensibilité à la casse et sans espaces blancs inutiles
                         $correct_clean = strtolower(trim($correct)); 
                         $answer_clean = strtolower($submitted_answer); 
                         $isCorrect = ($answer_clean === $correct_clean);
@@ -207,6 +234,9 @@ return function (App $app) {
                             $quizRepository->incrementParticipantScore($player_id);
                             $scoreEarned = 1;
                         }
+                    } else {
+                         // Question non trouvée
+                        return $setJsonResponse($response, ['error' => 'Question non trouvée.'], 404);
                     }
 
                     return $setJsonResponse($response, [
@@ -223,16 +253,16 @@ return function (App $app) {
             // ===============================
             // 🧾 Score & Classement
             // ===============================
-            // Note: La route /score/{id} est conservée pour la clarté de votre structure, 
-            // mais un appel à /score avec l'ID du middleware pourrait être plus simple.
-            $secureGroup->get('/score/{id}', function (Request $request, Response $response, array $args) use ($quizRepository, $setJsonResponse) {
-                $id = $args['id'];
-                // On pourrait aussi utiliser $id = $request->getAttribute('participant_id') pour le score du joueur authentifié
+            
+            // Récupérer le score du joueur authentifié
+            $secureGroup->get('/score', function (Request $request, Response $response) use ($quizRepository, $setJsonResponse) {
+                $id = $request->getAttribute('participant_id'); // ID récupéré du middleware
                 
                 try {
                     $score = $quizRepository->getParticipantScore((int)$id);
 
                     if ($score === false) {
+                        // Ce cas ne devrait pas arriver si le middleware fonctionne bien
                         return $setJsonResponse($response, ['error' => 'Participant non trouvé.'], 404);
                     }
 
@@ -242,6 +272,7 @@ return function (App $app) {
                     return $setJsonResponse($response, ['error' => 'Erreur interne du serveur.'], 500);
                 }
             });
+
 
             $secureGroup->get('/leaderboard', function (Request $request, Response $response) use ($quizRepository, $setJsonResponse) {
                 try {
@@ -258,12 +289,12 @@ return function (App $app) {
             // ===============================
 
             $secureGroup->post('/players/ready', function (Request $request, Response $response) use ($quizRepository, $setJsonResponse) {
-                // ID joueur récupéré du middleware (plus besoin du corps de la requête)
+                // ID joueur récupéré du middleware
                 $player_id = $request->getAttribute('participant_id');
 
                 try {
                     $quizRepository->setParticipantReady($player_id);
-                    return $setJsonResponse($response, ['success' => true, 'player_id' => $player_id]);
+                    return $setJsonResponse($response, ['success' => true, 'player_id' => $player_id, 'message' => 'Statut prêt mis à jour.']);
                 } catch (\PDOException $e) {
                     error_log("DB Error on Player Ready: " . $e->getMessage());
                     return $setJsonResponse($response, ['error' => 'Erreur interne du serveur.'], 500);
@@ -329,6 +360,12 @@ return function (App $app) {
 
         // Applique le middleware d'authentification au groupe de routes sécurisées
         })->add($authMiddleware); 
+    })
+    // Ajout d'un traitement d'erreur pour les routes non trouvées dans le groupe /api
+    ->add(function (Request $request, Response $response, \Slim\Exception\HttpNotFoundException $exception) use ($setJsonResponse) {
+        if (str_starts_with($request->getUri()->getPath(), '/api')) {
+             return $setJsonResponse($response, ['error' => 'Route API non trouvée.'], 404);
+        }
+        throw $exception;
     });
-
 };
