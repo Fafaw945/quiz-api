@@ -1,19 +1,15 @@
 <?php
-// Fichier : src/routes.php - Version avec correction des caractères invisibles
-
 use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
 
-// Fonction utilitaire pour le formatage JSON (obligatoire pour Slim 4)
 function setJsonResponse(Response $response, array $data, int $status = 200): Response {
     $response = $response->withHeader('Content-Type', 'application/json')->withStatus($status);
     $response->getBody()->write(json_encode($data));
     return $response;
 }
 
-
 // ===============================
-// 1. Inscription
+// 1️⃣ Inscription
 // ===============================
 $app->post('/api/register', function (Request $request, Response $response) use ($pdo) {
     $data = json_decode($request->getBody()->getContents(), true);
@@ -26,33 +22,33 @@ $app->post('/api/register', function (Request $request, Response $response) use 
         return setJsonResponse($response, ['error' => 'Champs manquants.'], 400);
     }
 
-    $stmt = $pdo->prepare("SELECT id FROM participants WHERE email = ? OR pseudo = ?");
-    $stmt->execute([$email, $pseudo]);
+    $stmt = $pdo->prepare("SELECT id FROM participants WHERE email = :email OR pseudo = :pseudo");
+    $stmt->execute(['email' => $email, 'pseudo' => $pseudo]);
     if ($stmt->fetch()) {
         return setJsonResponse($response, ['error' => 'Cet email ou pseudo est déjà utilisé.'], 409);
     }
 
     $hash = password_hash($password, PASSWORD_DEFAULT);
-    $isAdmin = ($email === 'admin@quiz.com') ? 1 : 0;
+    $isAdmin = ($email === 'admin@quiz.com') ? true : false;
 
-    // Réinitialisation de 'is_ready' et 'game_started' à 0 pour tout nouvel inscrit
     $stmt = $pdo->prepare(
         "INSERT INTO participants (name, pseudo, email, password, score, is_admin, is_ready, game_started) 
-         VALUES (?, ?, ?, ?, 0, ?, 0, 0)"
+         VALUES (:name, :pseudo, :email, :password, 0, :is_admin, FALSE, FALSE) RETURNING id"
     );
-    $stmt->execute([$name, $pseudo, $email, $hash, $isAdmin]);
-    $id = (int) $pdo->lastInsertId();
+    $stmt->execute([
+        'name' => $name,
+        'pseudo' => $pseudo,
+        'email' => $email,
+        'password' => $hash,
+        'is_admin' => $isAdmin
+    ]);
+    $id = (int)$stmt->fetchColumn();
 
-    if ($id <= 0) {
-        error_log("ERREUR CRITIQUE: lastInsertId() a retourné un ID invalide: {$id}");
-        return setJsonResponse($response, ['error' => 'Erreur lors de l’enregistrement de l’utilisateur. ID invalide.'], 500);
-    }
-    
     return setJsonResponse($response, ['message' => 'Inscription réussie', 'id' => $id, 'is_admin' => $isAdmin], 201);
 });
 
 // ===============================
-// 2. Connexion
+// 2️⃣ Connexion
 // ===============================
 $app->post('/api/login', function (Request $request, Response $response) use ($pdo) {
     $data = json_decode($request->getBody()->getContents(), true);
@@ -63,8 +59,8 @@ $app->post('/api/login', function (Request $request, Response $response) use ($p
         return setJsonResponse($response, ['error' => 'Email ou mot de passe manquant.'], 400);
     }
 
-    $stmt = $pdo->prepare("SELECT id, password, name, pseudo, is_admin FROM participants WHERE email = ?");
-    $stmt->execute([$email]);
+    $stmt = $pdo->prepare("SELECT id, password, name, pseudo, is_admin FROM participants WHERE email = :email");
+    $stmt->execute(['email' => $email]);
     $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
     if (!$user || !password_verify($password, $user['password'])) {
@@ -80,83 +76,54 @@ $app->post('/api/login', function (Request $request, Response $response) use ($p
     ]);
 });
 
-// =========================================================
-// 🧩 3. Questions aléatoires (POST) - GESTION UNIQUE ET GLOBALE
-// =========================================================
+// ===============================
+// 3️⃣ Questions aléatoires
+// ===============================
 $app->post('/api/quiz/questions', function (Request $request, Response $response) use ($pdo) {
+    $limit = 10;
 
-    $limit = 10; // Nombre de questions par quiz
-    
     try {
-        // 1. Sélectionner les questions non encore utilisées (is_used = 0)
-        $stmt = $pdo->prepare("
-            SELECT id, question, category, difficulty, correct_answer, incorrect_answers 
-            FROM questions
-            WHERE is_used = 0 
-            ORDER BY RAND()
-            LIMIT :limit
-        ");
-        $stmt->bindValue(':limit', $limit, PDO::PARAM_INT); 
-        $stmt->execute();
+        $stmt = $pdo->query("SELECT id, question, category, difficulty, correct_answer, incorrect_answers 
+                             FROM questions WHERE is_used = FALSE ORDER BY RANDOM() LIMIT $limit");
         $questions = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-        // Si nous n'avons pas assez de questions non utilisées, réinitialiser tout et recommencer
         if (count($questions) < $limit) {
-             // Marquer toutes les questions comme non utilisées (is_used = 0)
-            $pdo->query("UPDATE questions SET is_used = 0");
-            
-            // Re-sélectionner les questions
-            $stmt = $pdo->prepare("
-                SELECT id, question, category, difficulty, correct_answer, incorrect_answers 
-                FROM questions
-                ORDER BY RAND()
-                LIMIT :limit
-            ");
-            $stmt->bindValue(':limit', $limit, PDO::PARAM_INT); 
-            $stmt->execute();
+            $pdo->query("UPDATE questions SET is_used = FALSE");
+            $stmt = $pdo->query("SELECT id, question, category, difficulty, correct_answer, incorrect_answers 
+                                 FROM questions ORDER BY RANDOM() LIMIT $limit");
             $questions = $stmt->fetchAll(PDO::FETCH_ASSOC);
         }
 
-        // 2. Marquer les questions sélectionnées comme utilisées (is_used = 1)
-        $idsToMarkUsed = array_map(function($q) { return (int)$q['id']; }, $questions);
-        
+        $idsToMarkUsed = array_map(fn($q) => (int)$q['id'], $questions);
         if (!empty($idsToMarkUsed)) {
-            // Création des placeholders (?, ?, ?) pour la clause IN
-            $placeholders = implode(',', array_fill(0, count($idsToMarkUsed), '?'));
-            
-            // Mise à jour permanente dans la table 'questions'
-            $sql = "UPDATE questions SET is_used = 1 WHERE id IN ($placeholders)";
-            $update = $pdo->prepare($sql);
-            $update->execute($idsToMarkUsed);
+            $idsStr = implode(',', $idsToMarkUsed);
+            $pdo->query("UPDATE questions SET is_used = TRUE WHERE id IN ($idsStr)");
         }
 
-        // 3. Formatage et Envoi des questions (Restauration de la clé 'answers')
-        $formattedQuestions = array_map(function ($q) {
+        $formatted = array_map(function ($q) {
             $incorrect = json_decode($q['incorrect_answers'], true) ?? [];
             $allAnswers = $incorrect;
             $allAnswers[] = $q['correct_answer'];
             shuffle($allAnswers);
-
             return [
                 'id' => $q['id'],
                 'question' => $q['question'],
                 'category' => $q['category'],
                 'difficulty' => $q['difficulty'],
-                'answers' => $allAnswers, // <-- RESTAURATION de la clé 'answers'
+                'answers' => $allAnswers
             ];
         }, $questions);
 
-        return setJsonResponse($response, $formattedQuestions);
+        return setJsonResponse($response, $formatted);
 
     } catch (Exception $e) {
-        error_log("Erreur API /api/quiz/questions: " . $e->getMessage());
-        return setJsonResponse($response, ['error' => 'Erreur serveur interne lors de la sélection des questions.'], 500);
+        error_log("Erreur /api/quiz/questions : " . $e->getMessage());
+        return setJsonResponse($response, ['error' => 'Erreur serveur interne.'], 500);
     }
 });
 
-
 // ===============================
-// 🧩 Soumettre réponse (Simulé, le serveur Socket gère le score final)
+// 4️⃣ Soumettre réponse
 // ===============================
 $app->post('/api/quiz/answer', function (Request $request, Response $response) use ($pdo) {
     $data = json_decode($request->getBody()->getContents(), true);
@@ -168,40 +135,39 @@ $app->post('/api/quiz/answer', function (Request $request, Response $response) u
         return setJsonResponse($response, ['error' => 'Données manquantes.'], 400);
     }
 
-    $stmt = $pdo->prepare("SELECT correct_answer FROM questions WHERE id = ?");
-    $stmt->execute([$question_id]);
-    $correct = $stmt->fetchColumn(); 
+    $stmt = $pdo->prepare("SELECT correct_answer FROM questions WHERE id = :id");
+    $stmt->execute(['id' => $question_id]);
+    $correct = $stmt->fetchColumn();
 
     $isCorrect = false;
     $scoreEarned = 0;
-    
+
     if ($correct) {
-        $correct_clean = strtolower(trim($correct)); 
-        $answer_clean = strtolower($submitted_answer); 
+        $correct_clean = strtolower(trim($correct));
+        $answer_clean = strtolower($submitted_answer);
         $isCorrect = ($answer_clean === $correct_clean);
-        
-        // Simuler la mise à jour du score pour l'API pure, même si Socket.io est la source de vérité
+
         if ($isCorrect) {
-            $stmt_update = $pdo->prepare("UPDATE participants SET score = score + 1 WHERE id = ?");
-            $stmt_update->execute([$player_id]);
+            $stmt_update = $pdo->prepare("UPDATE participants SET score = score + 1 WHERE id = :id");
+            $stmt_update->execute(['id' => $player_id]);
             $scoreEarned = 1;
         }
     }
 
     return setJsonResponse($response, [
-        'correct_answer' => $correct, 
-        'is_correct' => $isCorrect, 
+        'correct_answer' => $correct,
+        'is_correct' => $isCorrect,
         'score_earned' => $scoreEarned
     ]);
 });
 
 // ===============================
-// 🧾 Score & Classement
+// 5️⃣ Score & Classement
 // ===============================
 $app->get('/api/score/{id}', function (Request $request, Response $response, array $args) use ($pdo) {
     $id = $args['id'];
-    $stmt = $pdo->prepare("SELECT score FROM participants WHERE id = ?");
-    $stmt->execute([$id]);
+    $stmt = $pdo->prepare("SELECT score FROM participants WHERE id = :id");
+    $stmt->execute(['id' => $id]);
     $score = $stmt->fetchColumn();
 
     return setJsonResponse($response, ['score' => (int)$score]);
@@ -215,19 +181,16 @@ $app->get('/api/leaderboard', function (Request $request, Response $response) us
 });
 
 // ===============================
-// 🚨 Routes de Gestion du Lobby
+// 6️⃣ Gestion du Lobby
 // ===============================
-
 $app->post('/api/players/ready', function (Request $request, Response $response) use ($pdo) {
     $data = json_decode($request->getBody()->getContents(), true);
     $player_id = $data['player_id'] ?? null;
 
-    if (!$player_id) {
-        return setJsonResponse($response, ['error' => 'ID joueur manquant.'], 400);
-    }
+    if (!$player_id) return setJsonResponse($response, ['error' => 'ID joueur manquant.'], 400);
 
-    $stmt = $pdo->prepare("UPDATE participants SET is_ready = 1 WHERE id = ?");
-    $stmt->execute([$player_id]);
+    $stmt = $pdo->prepare("UPDATE participants SET is_ready = TRUE WHERE id = :id");
+    $stmt->execute(['id' => $player_id]);
 
     return setJsonResponse($response, ['success' => true]);
 });
@@ -243,19 +206,15 @@ $app->post('/api/game/start', function (Request $request, Response $response) us
     $data = json_decode($request->getBody()->getContents(), true);
     $admin_id = $data['admin_id'] ?? null;
 
-    if (!$admin_id) {
-        return setJsonResponse($response, ['error' => 'ID admin manquant.'], 400);
-    }
+    if (!$admin_id) return setJsonResponse($response, ['error' => 'ID admin manquant.'], 400);
 
-    $stmt = $pdo->prepare("SELECT is_admin FROM participants WHERE id = ?");
-    $stmt->execute([$admin_id]);
+    $stmt = $pdo->prepare("SELECT is_admin FROM participants WHERE id = :id");
+    $stmt->execute(['id' => $admin_id]);
     $isAdmin = $stmt->fetchColumn();
 
-    if (!$isAdmin) {
-        return setJsonResponse($response, ['error' => 'Action réservée à l’administrateur.'], 403);
-    }
+    if (!$isAdmin) return setJsonResponse($response, ['error' => 'Action réservée à l’administrateur.'], 403);
 
-    $pdo->query("UPDATE participants SET game_started = 1");
+    $pdo->query("UPDATE participants SET game_started = TRUE");
 
     return setJsonResponse($response, ['message' => 'Partie lancée !']);
 });
@@ -268,21 +227,16 @@ $app->get('/api/game/status', function (Request $request, Response $response) us
 });
 
 // ===============================
-// 🧹 Route : Réinitialisation du jeu (pour l'admin)
+// 7️⃣ Réinitialisation du jeu (admin)
 // ===============================
 $app->post('/api/game/reset', function (Request $request, Response $response) use ($pdo) {
-    // Note: cette route doit être utilisée par l'administrateur
     try {
-        // Réinitialiser le statut 'is_used' des questions
-        $pdo->query("UPDATE questions SET is_used = 0");
-        
-        // Réinitialiser les scores, le statut 'ready' et 'game_started' des participants
-        $pdo->query("UPDATE participants SET score = 0, is_ready = 0, game_started = 0");
+        $pdo->query("UPDATE questions SET is_used = FALSE");
+        $pdo->query("UPDATE participants SET score = 0, is_ready = FALSE, game_started = FALSE");
 
-        return setJsonResponse($response, ['message' => 'Le jeu a été complètement réinitialisé. Les questions peuvent être réutilisées.'], 200);
-
+        return setJsonResponse($response, ['message' => 'Le jeu a été complètement réinitialisé.'], 200);
     } catch (Exception $e) {
-        error_log("Erreur lors de la réinitialisation du jeu: " . $e->getMessage());
-        return setJsonResponse($response, ['error' => 'Erreur serveur interne lors de la réinitialisation.'], 500);
+        error_log("Erreur lors de la réinitialisation : " . $e->getMessage());
+        return setJsonResponse($response, ['error' => 'Erreur serveur interne.'], 500);
     }
 });
