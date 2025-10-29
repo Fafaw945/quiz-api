@@ -10,14 +10,14 @@ error_log("INDEX.PHP start");
 $app = AppFactory::create();
 
 // ===============================
-// 🔧 1. Connexion BDD (Adaptée à Heroku - CORRIGÉ PGSQL)
+// 🔧 1. Connexion BDD (Adaptée à Heroku - PGSQL + SSL OBLIGATOIRE)
 // ===============================
 
 $dbUrl = getenv('DATABASE_URL');
 $pdo = null;
 
 if ($dbUrl) {
-    // Remplacer 'postgres://' par 'pgsql://' pour la compatibilité PDO
+    // 1. Remplacer 'postgres://' par 'pgsql://' pour la compatibilité PDO
     $dbUrl = str_replace("postgres://", "pgsql://", $dbUrl);
     
     $dbParams = parse_url($dbUrl);
@@ -32,18 +32,29 @@ if ($dbUrl) {
         $dbParams['pass']
     );
 
+    // Options PDO pour forcer le SSL/TLS (Critique sur Heroku)
+    $options = [
+        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+        // Ajouter un timeout de 5s pour éviter le timeout H12 d'Heroku (30s) en cas d'échec
+        PDO::ATTR_TIMEOUT => 5, 
+        // Forcer la connexion sécurisée (SSL/TLS)
+        PDO::PGSQL_ATTR_SSLMODE => 'require' 
+    ];
+
     try {
-        $pdo = new PDO($dsn);
-        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        // On passe le DSN, et les options (le user/pass peut être null car il est déjà dans le DSN)
+        $pdo = new PDO($dsn, null, null, $options); 
+        
         // Exposer $pdo globalement pour les routes
         $GLOBALS['db'] = $pdo; 
-        error_log("DB Connection successful with PGSQL.");
+        error_log("DB Connection successful with PGSQL/SSL.");
 
     } catch (PDOException $e) {
         error_log("DB CONNECTION ERROR: " . $e->getMessage());
         // En cas d'échec de connexion BDD, on arrête l'application.
         http_response_code(500);
-        die("Erreur de connexion à la base de données PostgreSQL.");
+        // Afficher un message plus précis pour le debug
+        die("Erreur de connexion à la base de données PostgreSQL. Vérifiez vos logs Heroku pour le message : " . $e->getMessage());
     }
 
 } else {
@@ -63,12 +74,11 @@ $app->add(function (Request $request, $handler) {
     // Liste des origines autorisées
     $allowedOrigins = [
         'https://quiz-app-eight-gold-57.vercel.app',
-        // Note: L'URL Heroku de l'API doit être utilisée par le frontend, pas par le backend
         'http://localhost:3000' 
     ];
     
     $origin = $request->getHeaderLine('Origin');
-    $allowedOrigin = '*'; // Par défaut, autorise tout
+    $allowedOrigin = '*'; 
 
     if (in_array($origin, $allowedOrigins)) {
         $allowedOrigin = $origin;
@@ -78,7 +88,7 @@ $app->add(function (Request $request, $handler) {
         ->withHeader('Access-Control-Allow-Origin', $allowedOrigin)
         ->withHeader('Access-Control-Allow-Headers', 'X-Requested-With, Content-Type, Accept, Origin, Authorization')
         ->withHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS')
-        ->withHeader('Access-Control-Allow-Credentials', 'true'); // Ajout pour les cookies/sessions
+        ->withHeader('Access-Control-Allow-Credentials', 'true');
 });
 
 // ⚙️ Préflight OPTIONS
