@@ -1,39 +1,62 @@
 <?php
 
 /**
- * db.php
- * Gère la connexion à la base de données (PostgreSQL sur Heroku, SQLite en local).
+ * Gère la connexion à la base de données PostgreSQL en utilisant la variable d'environnement DATABASE_URL.
+ * Ce fichier est minimal et ne tente aucune création de table.
  */
 
 $db = null;
+$databaseUrl = getenv('DATABASE_URL');
 
 try {
-    // --- 1️⃣ Vérifier si on est sur Heroku (PostgreSQL) ---
-    if (getenv('DATABASE_URL')) {
-        $url = parse_url(getenv('DATABASE_URL'));
+    if ($databaseUrl) {
+        // Heroku utilise le schéma 'postgres://', mais PDO PostgreSQL attend 'pgsql://'
+        $databaseUrl = str_replace("postgres://", "pgsql://", $databaseUrl);
+        
+        // Parse l'URL pour extraire les composants de connexion
+        $dbParts = parse_url($databaseUrl);
+        
+        if ($dbParts === false || !isset($dbParts['host'], $dbParts['user'], $dbParts['pass'], $dbParts['path'], $dbParts['port'])) {
+             // Si l'URL n'est pas parsable, on lève une exception.
+             throw new Exception("DATABASE_URL est présente mais invalide.");
+        }
+        
+        $host = $dbParts['host'];
+        $port = $dbParts['port'];
+        $user = $dbParts['user'];
+        $password = $dbParts['pass'];
+        // Le path contient le nom de la base de données (e.g., /dbname)
+        $dbname = ltrim($dbParts['path'], '/');
 
-        $host = $url['host'];
-        $port = $url['port'];
-        $user = $url['user'];
-        $pass = $url['pass'];
-        $dbname = ltrim($url['path'], '/');
-
-        // Connexion PostgreSQL
-        $dsn = "pgsql:host=$host;port=$port;dbname=$dbname;user=$user;password=$pass;sslmode=require";
+        $dsn = "pgsql:host=$host;port=$port;dbname=$dbname;user=$user;password=$password";
+        
+        // Tentative de connexion à la base de données PostgreSQL
         $db = new PDO($dsn);
 
-        $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-    } 
-    // --- 2️⃣ Sinon, on est en local (SQLite par défaut) ---
-    else {
-        $db_file = __DIR__ . '/../quiz.sqlite';
-        $db = new PDO("sqlite:$db_file");
-        $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    } else {
+        // Fallback local (ne sera pas utilisé sur Heroku)
+        $dsn = 'mysql:host=localhost;dbname=quizdb';
+        $db = new PDO($dsn, 'root', 'root');
     }
+    
+    // Configurer PDO pour lever des exceptions en cas d'erreur SQL
+    $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $db->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+
+    // Si la connexion réussit, $db contient l'objet de connexion PDO.
 
 } catch (PDOException $e) {
+    // En cas d'échec de connexion (timeout ou mauvais identifiants), on affiche le message d'erreur.
     http_response_code(500);
-    echo "<h1>Erreur de connexion à la base de données</h1>";
-    echo "<p>" . htmlspecialchars($e->getMessage()) . "</p>";
+    echo "<h1>Erreur Critique de Connexion BDD</h1>";
+    echo "<p>La connexion à la base de données a échoué. Vérifiez DATABASE_URL et ses identifiants.</p>";
+    error_log("DB Connection Failed: " . $e->getMessage()); // Log l'erreur complète sur Heroku
+    exit();
+} catch (Exception $e) {
+    http_response_code(500);
+    echo "<h1>Erreur Critique du Serveur</h1>";
+    echo "<p>Erreur interne : " . htmlspecialchars($e->getMessage()) . "</p>";
     exit();
 }
+
+?>
