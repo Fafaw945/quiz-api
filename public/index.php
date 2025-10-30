@@ -7,63 +7,64 @@ require __DIR__ . '/../vendor/autoload.php';
 
 error_log("INDEX.PHP start");
 
+// Créer l'application Slim
 $app = AppFactory::create();
 
 // ===============================
-// 🔧 1. Connexion BDD (Adaptée à Heroku - PGSQL + SSL OBLIGATOIRE)
+// 🔧 1. Connexion BDD (Heroku PGSQL + fallback MySQL local)
 // ===============================
 
-$dbUrl = getenv('DATABASE_URL');
+// Charger les variables d'environnement
+$dotenv = Dotenv\Dotenv::createImmutable(__DIR__ . '/../');
+$dotenv->safeLoad();
+
 $pdo = null;
 
-if ($dbUrl) {
-    // 1. Remplacer 'postgres://' par 'pgsql://' pour la compatibilité PDO
-    $dbUrl = str_replace("postgres://", "pgsql://", $dbUrl);
-    
+if (!empty($_ENV['DATABASE_URL'])) {
+    // Heroku PostgreSQL
+    $dbUrl = str_replace("postgres://", "pgsql://", $_ENV['DATABASE_URL']);
     $dbParams = parse_url($dbUrl);
 
-    // Définition du DSN pour PostgreSQL (pgsql)
     $dsn = sprintf(
-        'pgsql:host=%s;port=%s;dbname=%s;user=%s;password=%s',
+        'pgsql:host=%s;port=%s;dbname=%s',
         $dbParams['host'],
-        $dbParams['port'],
-        ltrim($dbParams['path'], '/'),
-        $dbParams['user'],
-        $dbParams['pass']
+        $dbParams['port'] ?? 5432,
+        ltrim($dbParams['path'], '/')
     );
 
-    // Options PDO pour forcer le SSL/TLS (Critique sur Heroku)
-    $options = [
-        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-        // Ajouter un timeout de 5s pour éviter le timeout H12 d'Heroku (30s) en cas d'échec
-        PDO::ATTR_TIMEOUT => 5, 
-        // Forcer la connexion sécurisée (SSL/TLS)
-        PDO::PGSQL_ATTR_SSLMODE => 'require' 
-    ];
+    $user = $dbParams['user'];
+    $pass = $dbParams['pass'];
 
     try {
-        // On passe le DSN, et les options (le user/pass peut être null car il est déjà dans le DSN)
-        $pdo = new PDO($dsn, null, null, $options); 
-        
-        // Exposer $pdo globalement pour les routes
-        $GLOBALS['db'] = $pdo; 
-        error_log("DB Connection successful with PGSQL/SSL.");
-
+        $pdo = new PDO($dsn, $user, $pass, [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+            PDO::ATTR_TIMEOUT => 5,
+            PDO::PGSQL_ATTR_SSLMODE => 'require' // SSL obligatoire sur Heroku
+        ]);
+        error_log("Connexion BDD PostgreSQL réussie.");
     } catch (PDOException $e) {
-        error_log("DB CONNECTION ERROR: " . $e->getMessage());
-        // En cas d'échec de connexion BDD, on arrête l'application.
+        error_log("Erreur connexion PostgreSQL : " . $e->getMessage());
         http_response_code(500);
-        // Afficher un message plus précis pour le debug
-        die("Erreur de connexion à la base de données PostgreSQL. Vérifiez vos logs Heroku pour le message : " . $e->getMessage());
+        die("Erreur de connexion à la base PostgreSQL. Vérifiez les logs.");
     }
 
 } else {
-    // Fallback local (si vous n'avez pas DATABASE_URL, utiliser MySQL par défaut)
-    error_log("DATABASE_URL not set. Using local MySQL fallback.");
-    $pdo = new PDO('mysql:host=localhost;dbname=quiz_game;charset=utf8', 'root', '');
-    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-    $GLOBALS['db'] = $pdo;
+    // Fallback local MySQL
+    try {
+        $pdo = new PDO('mysql:host=localhost;dbname=quiz_game;charset=utf8', 'root', '');
+        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+        error_log("Connexion BDD MySQL locale réussie.");
+    } catch (PDOException $e) {
+        error_log("Erreur connexion MySQL : " . $e->getMessage());
+        http_response_code(500);
+        die("Erreur de connexion à la base MySQL locale.");
+    }
 }
+
+// Exposer $pdo globalement pour les routes
+$GLOBALS['db'] = $pdo;
 
 // ===============================
 // 🌍 2. Middleware CORS
@@ -71,18 +72,13 @@ if ($dbUrl) {
 $app->add(function (Request $request, $handler) {
     $response = $handler->handle($request);
 
-    // Liste des origines autorisées
     $allowedOrigins = [
         'https://quiz-app-eight-gold-57.vercel.app',
-        'http://localhost:3000' 
+        'http://localhost:3000'
     ];
-    
-    $origin = $request->getHeaderLine('Origin');
-    $allowedOrigin = '*'; 
 
-    if (in_array($origin, $allowedOrigins)) {
-        $allowedOrigin = $origin;
-    }
+    $origin = $request->getHeaderLine('Origin');
+    $allowedOrigin = in_array($origin, $allowedOrigins) ? $origin : '*';
 
     return $response
         ->withHeader('Access-Control-Allow-Origin', $allowedOrigin)
@@ -105,7 +101,7 @@ $app->addBodyParsingMiddleware();
 // ===============================
 // 🔹 3. Inclure les routes
 // ===============================
-$routesFile = __DIR__ . '/../routes.php';
+$routesFile = __DIR__ . '/../src/routes.php';
 if (!file_exists($routesFile)) {
     die("ERREUR: Le fichier de routes est introuvable à l'emplacement: " . $routesFile);
 }

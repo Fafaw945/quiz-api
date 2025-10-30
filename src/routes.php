@@ -2,11 +2,20 @@
 use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
 
+// ===============================
+// 🔹 Fonction utilitaire JSON
+// ===============================
 function setJsonResponse(Response $response, array $data, int $status = 200): Response {
     $response = $response->withHeader('Content-Type', 'application/json')->withStatus($status);
     $response->getBody()->write(json_encode($data));
     return $response;
 }
+
+// ===============================
+// 🔹 Détection du driver PDO
+// ===============================
+$pdo = $GLOBALS['db']; // $pdo défini dans index.php
+$driver = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
 
 // ===============================
 // 1️⃣ Inscription
@@ -29,11 +38,11 @@ $app->post('/api/register', function (Request $request, Response $response) use 
     }
 
     $hash = password_hash($password, PASSWORD_DEFAULT);
-    $isAdmin = ($email === 'admin@quiz.com') ? true : false;
+    $isAdmin = ($email === 'admin@quiz.com') ? 1 : 0;
 
     $stmt = $pdo->prepare(
         "INSERT INTO participants (name, pseudo, email, password, score, is_admin, is_ready, game_started) 
-         VALUES (:name, :pseudo, :email, :password, 0, :is_admin, FALSE, FALSE) RETURNING id"
+         VALUES (:name, :pseudo, :email, :password, 0, :is_admin, FALSE, FALSE)"
     );
     $stmt->execute([
         'name' => $name,
@@ -42,7 +51,9 @@ $app->post('/api/register', function (Request $request, Response $response) use 
         'password' => $hash,
         'is_admin' => $isAdmin
     ]);
-    $id = (int)$stmt->fetchColumn();
+
+    // Récupérer l'ID inséré (fonctionne avec MySQL et PostgreSQL)
+    $id = (int)$pdo->lastInsertId();
 
     return setJsonResponse($response, ['message' => 'Inscription réussie', 'id' => $id, 'is_admin' => $isAdmin], 201);
 });
@@ -79,21 +90,23 @@ $app->post('/api/login', function (Request $request, Response $response) use ($p
 // ===============================
 // 3️⃣ Questions aléatoires
 // ===============================
-$app->post('/api/quiz/questions', function (Request $request, Response $response) use ($pdo) {
+$app->post('/api/quiz/questions', function (Request $request, Response $response) use ($pdo, $driver) {
     $limit = 10;
+    $randFunc = ($driver === 'pgsql') ? 'RANDOM()' : 'RAND()';
 
     try {
         $stmt = $pdo->query("SELECT id, question, category, difficulty, correct_answer, incorrect_answers 
-                             FROM questions WHERE is_used = FALSE ORDER BY RANDOM() LIMIT $limit");
+                             FROM questions WHERE is_used = FALSE ORDER BY $randFunc LIMIT $limit");
         $questions = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
         if (count($questions) < $limit) {
             $pdo->query("UPDATE questions SET is_used = FALSE");
             $stmt = $pdo->query("SELECT id, question, category, difficulty, correct_answer, incorrect_answers 
-                                 FROM questions ORDER BY RANDOM() LIMIT $limit");
+                                 FROM questions ORDER BY $randFunc LIMIT $limit");
             $questions = $stmt->fetchAll(PDO::FETCH_ASSOC);
         }
 
+        // Marquer les questions comme utilisées
         $idsToMarkUsed = array_map(fn($q) => (int)$q['id'], $questions);
         if (!empty($idsToMarkUsed)) {
             $idsStr = implode(',', $idsToMarkUsed);
@@ -115,7 +128,6 @@ $app->post('/api/quiz/questions', function (Request $request, Response $response
         }, $questions);
 
         return setJsonResponse($response, $formatted);
-
     } catch (Exception $e) {
         error_log("Erreur /api/quiz/questions : " . $e->getMessage());
         return setJsonResponse($response, ['error' => 'Erreur serveur interne.'], 500);
@@ -143,10 +155,7 @@ $app->post('/api/quiz/answer', function (Request $request, Response $response) u
     $scoreEarned = 0;
 
     if ($correct) {
-        $correct_clean = strtolower(trim($correct));
-        $answer_clean = strtolower($submitted_answer);
-        $isCorrect = ($answer_clean === $correct_clean);
-
+        $isCorrect = (strtolower(trim($submitted_answer)) === strtolower(trim($correct)));
         if ($isCorrect) {
             $stmt_update = $pdo->prepare("UPDATE participants SET score = score + 1 WHERE id = :id");
             $stmt_update->execute(['id' => $player_id]);
