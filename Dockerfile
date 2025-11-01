@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y \
 
 # 2. Installer les extensions PHP correspondantes
 # (pdo_mysql, mysqli, zip, gd pour les images, mbstring pour les chaînes, simplexml)
-RUN docker-php-ext-install pdo pdo_mysql mysqli zip gd mbstring simplexml
+RUN docker-php-ext-install pdo pdo_mysql mysqli zip gd mbstring simplexml pdo_pgsql
 
 # 3. Installer Composer (le gestionnaire de paquets PHP)
 COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
