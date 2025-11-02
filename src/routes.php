@@ -15,26 +15,6 @@ function setJsonResponse(Response $response, array $data, int $status = 200): Re
 $container = $app->getContainer();
 
 // ===============================
-// 🔹 Route test DB
-// ===============================
-$app->get('/test-db', function (Request $request, Response $response) use ($container) {
-    $pdo = $container->get('db');
-    try {
-        $tables = $pdo->query("SHOW TABLES")->fetchAll(PDO::FETCH_COLUMN);
-        $response->getBody()->write(json_encode([
-            'status' => 'ok',
-            'tables' => $tables
-        ]));
-    } catch (PDOException $e) {
-        $response->getBody()->write(json_encode([
-            'status' => 'error',
-            'message' => $e->getMessage()
-        ]));
-    }
-    return $response->withHeader('Content-Type', 'application/json');
-});
-
-// ===============================
 // 1️⃣ Inscription
 // ===============================
 $app->post('/api/register', function (Request $request, Response $response) use ($container) {
@@ -114,14 +94,17 @@ $fetchQuestions = function () use ($container) {
     $pdo = $container->get('db');
     $limit = 10;
 
+    // CORRIGÉ : "RANDOM()" est la syntaxe PostgreSQL. "RAND()" est pour MySQL.
     $stmt = $pdo->query("SELECT id, question, category, difficulty, correct_answer, incorrect_answers 
-                         FROM questions WHERE is_used = FALSE ORDER BY RAND() LIMIT $limit");
+                          FROM questions WHERE is_used = FALSE ORDER BY RANDOM() LIMIT $limit");
     $questions = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
     if (count($questions) < $limit) {
         $pdo->query("UPDATE questions SET is_used = FALSE");
+        
+        // CORRIGÉ : "RANDOM()" est la syntaxe PostgreSQL. "RAND()" est pour MySQL.
         $stmt = $pdo->query("SELECT id, question, category, difficulty, correct_answer, incorrect_answers 
-                             FROM questions ORDER BY RAND() LIMIT $limit");
+                              FROM questions ORDER BY RANDOM() LIMIT $limit");
         $questions = $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
