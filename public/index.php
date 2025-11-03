@@ -9,6 +9,7 @@ require __DIR__ . '/../vendor/autoload.php';
 // ===============================
 // 🔧 Afficher toutes les erreurs pour le débogage
 // ===============================
+// (Nous laissons ceci, car APP_DEBUG=false sur Render le désactivera)
 ini_set('display_errors', 1);
 ini_set('display_startup_errors', 1);
 error_reporting(E_ALL);
@@ -17,33 +18,42 @@ error_reporting(E_ALL);
 // 🔧 Charger les variables d'environnement
 // ===============================
 $dotenv = Dotenv\Dotenv::createImmutable(__DIR__ . '/../');
-$dotenv->safeLoad();
+$dotenv->safeLoad(); // safeLoad() n'échouera pas si .env est absent (parfait pour Render)
 
 // ===============================
 // 🔧 Créer le container Slim et injecter PDO
 // ===============================
 $container = new Container();
 
+// === C'EST LE BLOC CORRIGÉ POUR RENDER (POSTGRESQL) ===
 $container->set('db', function () {
-    $host = getenv('DB_HOST') ?: 'db';
-    $port = getenv('DB_PORT') ?: 3306;
-    $dbname = getenv('DB_DATABASE') ?: 'quiz_game';
-    $user = getenv('DB_USERNAME') ?: 'root';
-    $pass = getenv('DB_PASSWORD') ?: 'root';
-
+    // Ces variables sont lues depuis l'environnement Render
+    $host = getenv('DB_HOST');
+    $port = getenv('DB_PORT');
+    $dbname = getenv('DB_DATABASE');
+    $user = getenv('DB_USERNAME');
+    $pass = getenv('DB_PASSWORD');
 
     try {
-        $dsn = "mysql:host=$host;port=$port;dbname=$dbname;charset=utf8mb4";
+        // 1. On utilise "pgsql:" au lieu de "mysql:"
+        // 2. On supprime ";charset=utf8mb4" (non valide pour le DSN pgsql)
+        $dsn = "pgsql:host=$host;port=$port;dbname=$dbname";
+        
         $pdo = new PDO($dsn, $user, $pass);
         $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
         $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
-        error_log("Connexion MySQL réussie.");
+        
+        // Message de log corrigé pour la production
+        error_log("Connexion PostgreSQL réussie."); 
         return $pdo;
+
     } catch (PDOException $e) {
-        error_log("Erreur connexion MySQL : " . $e->getMessage());
+        // Message de log corrigé pour la production
+        error_log("Erreur connexion PostgreSQL : " . $e->getMessage());
         die("Erreur de connexion à la base de données : " . $e->getMessage());
     }
 });
+// === FIN DU BLOC CORRIGÉ ===
 
 AppFactory::setContainer($container);
 $app = AppFactory::create();
@@ -53,9 +63,10 @@ $app = AppFactory::create();
 // ===============================
 $app->add(function (Request $request, $handler) {
     $response = $handler->handle($request);
+    // Autoriser toutes les origines pour le moment
     $origin = $request->getHeaderLine('Origin') ?: '*';
     return $response
-        ->withHeader('Access-Control-Allow-Origin', $origin)
+        ->withHeader('Access-Control-Allow-Origin', $origin) 
         ->withHeader('Access-Control-Allow-Headers', 'X-Requested-With, Content-Type, Accept, Origin, Authorization')
         ->withHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS')
         ->withHeader('Access-Control-Allow-Credentials', 'true');
