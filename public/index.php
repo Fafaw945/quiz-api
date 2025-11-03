@@ -10,7 +10,7 @@ require __DIR__ . '/../vendor/autoload.php';
 // 🔧 Afficher toutes les erreurs pour le débogage
 // ===============================
 // (Nous laissons ceci, car APP_DEBUG=false sur Render le désactivera)
-ini_set('display_errors', 1);
+ini_set('display_errors', 0);
 ini_set('display_startup_errors', 1);
 error_reporting(E_ALL);
 
