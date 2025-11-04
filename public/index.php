@@ -62,19 +62,24 @@ $app = AppFactory::create();
 // 🌍 Middleware CORS
 // ===============================
 $app->add(function (Request $request, $handler) {
+    // Si c’est une requête OPTIONS, on renvoie tout de suite la réponse CORS
+    if ($request->getMethod() === 'OPTIONS') {
+        $response = new \Slim\Psr7\Response();
+        return $response
+            ->withHeader('Access-Control-Allow-Origin', $request->getHeaderLine('Origin') ?: '*')
+            ->withHeader('Access-Control-Allow-Headers', 'X-Requested-With, Content-Type, Accept, Origin, Authorization')
+            ->withHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS')
+            ->withHeader('Access-Control-Allow-Credentials', 'true')
+            ->withStatus(200);
+    }
+
+    // Sinon, on laisse passer la requête normale
     $response = $handler->handle($request);
-    // Autoriser toutes les origines pour le moment
-    $origin = $request->getHeaderLine('Origin') ?: '*';
     return $response
-        ->withHeader('Access-Control-Allow-Origin', $origin) 
+        ->withHeader('Access-Control-Allow-Origin', $request->getHeaderLine('Origin') ?: '*')
         ->withHeader('Access-Control-Allow-Headers', 'X-Requested-With, Content-Type, Accept, Origin, Authorization')
         ->withHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS')
         ->withHeader('Access-Control-Allow-Credentials', 'true');
-});
-
-// Préflight OPTIONS
-$app->options('/{routes:.+}', function (Request $request, Response $response) {
-    return $response->withStatus(200);
 });
 
 // Middleware Slim requis
