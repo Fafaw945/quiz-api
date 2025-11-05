@@ -94,15 +94,13 @@ $fetchQuestions = function () use ($container) {
     $pdo = $container->get('db');
     $limit = 10;
 
-    // CORRIGÉ : "RANDOM()" est la syntaxe PostgreSQL. "RAND()" est pour MySQL.
+    // Syntax PostgreSQL : RANDOM()
     $stmt = $pdo->query("SELECT id, question, category, difficulty, correct_answer, incorrect_answers 
                          FROM questions WHERE is_used = FALSE ORDER BY RANDOM() LIMIT $limit");
     $questions = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
     if (count($questions) < $limit) {
         $pdo->query("UPDATE questions SET is_used = FALSE");
-        
-        // CORRIGÉ : "RANDOM()" est la syntaxe PostgreSQL. "RAND()" est pour MySQL.
         $stmt = $pdo->query("SELECT id, question, category, difficulty, correct_answer, incorrect_answers 
                              FROM questions ORDER BY RANDOM() LIMIT $limit");
         $questions = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -131,12 +129,10 @@ $fetchQuestions = function () use ($container) {
     return $formatted;
 };
 
-// Route POST
 $app->post('/api/quiz/questions', function (Request $request, Response $response) use ($fetchQuestions) {
     return setJsonResponse($response, $fetchQuestions());
 });
 
-// Route GET (Postman friendly)
 $app->get('/api/questions', function (Request $request, Response $response) use ($fetchQuestions) {
     return setJsonResponse($response, $fetchQuestions());
 });
@@ -153,7 +149,6 @@ $app->post('/api/quiz/answer', function (Request $request, Response $response) u
     $submitted_answer = trim($data['answer'] ?? '');
 
     if (!$player_id || !$question_id || $submitted_answer === '') {
-        // Si le player_id est 0, c'est juste pour récupérer la réponse
         if ($player_id === 0 && $question_id) {
              $stmt = $pdo->prepare("SELECT correct_answer FROM questions WHERE id = :id");
              $stmt->execute(['id' => $question_id]);
@@ -201,7 +196,8 @@ $app->get('/api/score/{id}', function (Request $request, Response $response, arr
 
 $app->get('/api/leaderboard', function (Request $request, Response $response) use ($container) {
     $pdo = $container->get('db');
-    $stmt = $pdo->query("SELECT pseudo, score FROM participants ORDER BY score DESC LIMIT 10");
+    // 💡 CORRECTION 1 : Seulement les joueurs présents (is_ready = TRUE)
+    $stmt = $pdo->query("SELECT pseudo, score FROM participants WHERE is_ready = TRUE ORDER BY score DESC");
     $leaderboard = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
     return setJsonResponse($response, $leaderboard);
@@ -225,8 +221,8 @@ $app->post('/api/players/ready', function (Request $request, Response $response)
 
 $app->get('/api/players/ready-list', function (Request $request, Response $response) use ($container) {
     $pdo = $container->get('db');
-    // 💡 CORRECTION : Ajout de "id" à la requête SELECT
-    $stmt = $pdo->query("SELECT id, pseudo, is_admin, is_ready FROM participants ORDER BY id ASC");
+    // 💡 CORRECTION 2 : Ajout de "score" pour l'affichage en direct
+    $stmt = $pdo->query("SELECT id, pseudo, is_admin, is_ready, score FROM participants ORDER BY id ASC");
     $players = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
     return setJsonResponse($response, $players);
@@ -259,4 +255,17 @@ $app->get('/api/game/status', function (Request $request, Response $response) us
     $status = $stmt->fetchColumn();
 
     return setJsonResponse($response, ['started' => (bool)$status]);
+});
+
+$app->post('/api/game/reset', function (Request $request, Response $response) use ($container) {
+    $pdo = $container->get('db');
+    try {
+        $pdo->query("UPDATE questions SET is_used = FALSE");
+        $pdo->query("UPDATE participants SET score = 0, is_ready = FALSE, game_started = FALSE");
+
+        return setJsonResponse($response, ['message' => 'Le jeu a été complètement réinitialisé.'], 200);
+    } catch (Exception $e) {
+        error_log("Erreur lors de la réinitialisation : " . $e->getMessage());
+        return setJsonResponse($response, ['error' => 'Erreur serveur interne.'], 500);
+    }
 });
