@@ -196,8 +196,8 @@ $app->get('/api/score/{id}', function (Request $request, Response $response, arr
 
 $app->get('/api/leaderboard', function (Request $request, Response $response) use ($container) {
     $pdo = $container->get('db');
-    // 💡 CORRECTION 1 : Seulement les joueurs présents (is_ready = TRUE)
-    $stmt = $pdo->query("SELECT pseudo, score FROM participants WHERE is_ready = TRUE ORDER BY score DESC");
+    // 💡 RETOUR ARRIÈRE : On enlève "WHERE is_ready = TRUE" pour être sûr d'avoir des résultats
+    $stmt = $pdo->query("SELECT pseudo, score FROM participants ORDER BY score DESC LIMIT 15");
     $leaderboard = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
     return setJsonResponse($response, $leaderboard);
